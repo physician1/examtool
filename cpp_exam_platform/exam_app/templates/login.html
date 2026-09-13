@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}Sign in · BeaconCode Assess{% endblock %}
+{% block body_class %}login-body{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <section class="login-hero">
+    <div class="hero-badge">C++ COURSE ASSESSMENTS</div>
+    <h1>Focused exams.<br><span>Clear grading.</span></h1>
+    <p>A secure, instructor-controlled assessment workspace for programming courses.</p>
+    <div class="hero-points"><div>✓ Multiple choice & short response</div><div>✓ C++ code editor & hidden test cases</div><div>✓ Live browser-behavior monitoring</div></div>
+  </section>
+  <section class="login-card">
+    <div class="login-logo"><span class="brand-mark big">&lt;/&gt;</span></div>
+    <h2>Welcome back</h2><p class="muted">Sign in with your email or student ID.</p>
+    <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Email or Student ID<input name="identifier" autocomplete="username" required autofocus></label>
+      <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+      <button class="btn btn-primary btn-block">Sign in</button>
+    </form>
+    <p class="login-foot">Course-managed assessment system · Not an official UMass Boston service</p>
+  </section>
+</div>
+{% endblock %}

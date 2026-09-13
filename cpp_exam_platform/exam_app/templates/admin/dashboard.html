@@ -1,0 +1,17 @@
+{% extends 'base.html' %}{% block title %}Instructor Overview{% endblock %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">INSTRUCTOR CONSOLE</span><h1>Assessment overview</h1><p>Manage exams, monitor active sessions, and review results.</p></div><a class="btn btn-primary" href="{{ url_for('admin.exam_new') }}">+ Create exam</a></div>
+<div class="stat-grid">
+  <div class="stat-card"><span>Students</span><strong>{{ students }}</strong><small>registered accounts</small></div>
+  <div class="stat-card"><span>Active now</span><strong>{{ active_attempts }}</strong><small>in-progress attempts</small></div>
+  <div class="stat-card"><span>Submitted</span><strong>{{ submitted }}</strong><small>completed attempts</small></div>
+  <div class="stat-card"><span>Exams</span><strong>{{ exams|length }}</strong><small>created assessments</small></div>
+</div>
+<div class="two-col">
+<section class="card"><div class="card-head"><div><h2>Recent exams</h2><p>Your latest assessments</p></div><a href="{{ url_for('admin.exams') }}">View all</a></div>
+{% if exams %}<div class="table-wrap"><table><thead><tr><th>Exam</th><th>Status</th><th>Questions</th><th></th></tr></thead><tbody>{% for exam in exams[:6] %}<tr><td><strong>{{ exam.title }}</strong><br><small>{{ exam.course_code }}</small></td><td><span class="pill {{ 'pill-green' if exam.published else '' }}">{{ 'Published' if exam.published else 'Draft' }}</span></td><td>{{ exam.questions|length }}</td><td><a class="table-link" href="{{ url_for('admin.exam_edit', exam_id=exam.id) }}">Manage →</a></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No exams yet. Create your first C++ assessment.</div>{% endif %}
+</section>
+<section class="card"><div class="card-head"><div><h2>Recent monitoring events</h2><p>Latest recorded exam behavior</p></div></div>
+{% if recent_events %}<div class="event-list">{% for e in recent_events %}<div class="event"><span class="event-dot"></span><div><strong>{{ e.attempt.user.name }}</strong><p>{{ e.event_type|replace('_',' ')|title }}{% if e.details %} · {{ e.details }}{% endif %}</p><small>{{ e.created_at.strftime('%b %d, %H:%M:%S') }}</small></div></div>{% endfor %}</div>{% else %}<div class="empty">No monitoring events recorded.</div>{% endif %}
+</section></div>
+{% endblock %}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{% block title %}BeaconCode Assess{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% if current_user.is_authenticated %}
+<header class="topbar">
+  <a class="brand" href="{{ url_for('main.index') }}">
+    <span class="brand-mark">&lt;/&gt;</span>
+    <span><strong>BeaconCode</strong><small>C++ Assessment Platform</small></span>
+  </a>
+  <div class="topbar-right">
+    <span class="user-chip"><span class="avatar">{{ current_user.name[:1] }}</span>{{ current_user.name }}</span>
+    <form action="{{ url_for('auth.logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-ghost btn-sm">Sign out</button></form>
+  </div>
+</header>
+<div class="shell">
+  {% if current_user.role == 'admin' %}
+  <aside class="sidebar">
+    <div class="sidebar-label">Instructor</div>
+    <a href="{{ url_for('admin.dashboard') }}" class="nav-link">Overview</a>
+    <a href="{{ url_for('admin.exams') }}" class="nav-link">Exams</a>
+    <a href="{{ url_for('admin.students') }}" class="nav-link">Students</a>
+    <div class="sidebar-note">Designed for supervised C++ assessments. Browser monitoring is evidence, not a complete device lockdown.</div>
+  </aside>
+  {% endif %}
+  <main class="content {% if current_user.role != 'admin' %}student-content{% endif %}">
+{% else %}
+  <main>
+{% endif %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}<div class="flash-stack">{% for category, message in messages %}<div class="alert alert-{{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+{% if current_user.is_authenticated %}</div>{% endif %}
+{% block scripts %}{% endblock %}
+</body>
+</html>
