@@ -407,3 +407,7 @@ Open **Grades** in the instructor sidebar. The matrix combines each student's su
 Open **Students → Import from Canvas** and upload a Canvas Gradebook/roster CSV. BeaconCode recognizes common fields such as `Student`, `ID`, `SIS User ID`, `SIS Login ID`, and `Section`; assignment columns are ignored. New accounts receive random temporary passwords and the post-import screen can download a credentials CSV. Existing students are detected and not duplicated.
 
 Canvas metadata is stored in a separate `student_profile` table so an existing PostgreSQL deployment can be upgraded with the same database via `db.create_all()`.
+
+## Per-student exam exceptions
+
+Instructors can grant one student a custom exam start/end window after the normal exam has closed. Open **Exams -> Exceptions** (or **Student exceptions** from the exam settings/results page), choose the student, set the special window, and optionally reopen an already submitted attempt while preserving the student's answers. This uses the existing Render/PostgreSQL deployment; no hosting changes are required.

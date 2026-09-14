@@ -185,3 +185,26 @@ class StudentProfile(db.Model):
     imported_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
     user = db.relationship("User", backref=db.backref("student_profile", uselist=False))
+
+
+class ExamException(db.Model):
+    """Per-student access override for an exam.
+
+    This lives in its own table so an existing hosted database can pick it up
+    with db.create_all() without altering the core exam/attempt tables.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    exam_id = db.Column(db.Integer, db.ForeignKey("exam.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    start_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    end_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    duration_minutes = db.Column(db.Integer, nullable=True)
+    reason = db.Column(db.String(500), default="")
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    exam = db.relationship("Exam")
+    user = db.relationship("User")
+
+    __table_args__ = (db.UniqueConstraint("exam_id", "user_id", name="uq_exam_exception"),)

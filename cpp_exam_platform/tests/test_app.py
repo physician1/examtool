@@ -119,3 +119,85 @@ def test_admin_can_delete_student_and_related_records(client, app):
         assert db.session.get(User, student_id) is None
         assert db.session.get(Attempt, attempt_id) is None
         assert StudentProfile.query.filter_by(user_id=student_id).first() is None
+
+
+def test_admin_can_grant_post_deadline_exception(client, app):
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from exam_app.models import ExamException
+
+    with app.app_context():
+        exam = Exam.query.first()
+        exam.start_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        exam.end_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.session.commit()
+        exam_id = exam.id
+        student_id = User.query.filter_by(student_id='S001').first().id
+
+    login(client, 'teacher@example.edu')
+    now_et = datetime.now(ZoneInfo('America/New_York'))
+    r = client.post(
+        f'/admin/exams/{exam_id}/exceptions',
+        data={
+            'user_id': str(student_id),
+            'start_at': (now_et - timedelta(minutes=2)).strftime('%Y-%m-%dT%H:%M'),
+            'end_at': (now_et + timedelta(minutes=45)).strftime('%Y-%m-%dT%H:%M'),
+            'duration_minutes': '30',
+            'reason': 'Approved make-up exam',
+        },
+        follow_redirects=True,
+    )
+    assert r.status_code == 200
+    assert b'Special exam access saved' in r.data
+
+    with app.app_context():
+        exception = ExamException.query.filter_by(exam_id=exam_id, user_id=student_id).first()
+        assert exception is not None
+        assert exception.duration_minutes == 30
+
+    client.post('/logout', follow_redirects=True)
+    r = login(client, 'S001')
+    assert b'Special access granted' in r.data
+    r = client.post(f'/student/exams/{exam_id}/start', follow_redirects=True)
+    assert r.status_code == 200
+    assert b'Test Exam' in r.data
+
+
+def test_admin_can_reopen_submitted_attempt_with_exception(client, app):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from exam_app.models import Attempt, Answer
+
+    with app.app_context():
+        exam = Exam.query.first()
+        student = User.query.filter_by(student_id='S001').first()
+        question = Question.query.first()
+        attempt = Attempt(user_id=student.id, exam_id=exam.id, status='submitted', score=2.0, submitted_at=datetime.now(ZoneInfo('UTC')))
+        db.session.add(attempt)
+        db.session.flush()
+        db.session.add(Answer(attempt_id=attempt.id, question_id=question.id, answer_text='1', score=2.0, feedback='Correct.'))
+        db.session.commit()
+        exam_id, student_id, attempt_id = exam.id, student.id, attempt.id
+
+    login(client, 'teacher@example.edu')
+    now_et = datetime.now(ZoneInfo('America/New_York'))
+    r = client.post(
+        f'/admin/exams/{exam_id}/exceptions',
+        data={
+            'user_id': str(student_id),
+            'start_at': now_et.strftime('%Y-%m-%dT%H:%M'),
+            'end_at': (now_et + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M'),
+            'reopen_submitted': 'on',
+        },
+        follow_redirects=True,
+    )
+    assert r.status_code == 200
+
+    with app.app_context():
+        attempt = db.session.get(Attempt, attempt_id)
+        answer = Answer.query.filter_by(attempt_id=attempt_id).first()
+        assert attempt.status == 'in_progress'
+        assert attempt.submitted_at is None
+        assert attempt.score == 0.0
+        assert answer.answer_text == '1'  # student's work is preserved
+        assert answer.score == 0.0

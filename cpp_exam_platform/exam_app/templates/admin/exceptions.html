@@ -1,0 +1,88 @@
+{% extends 'base.html' %}{% block title %}Special access · {{ exam.title }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">STUDENT EXCEPTIONS</span>
+    <h1>{{ exam.title }}</h1>
+    <p>Open this exam for one student outside the normal exam window without reopening it for the rest of the class.</p>
+  </div>
+  <div class="head-actions">
+    <a class="btn btn-secondary" href="{{ url_for('admin.exam_edit', exam_id=exam.id) }}">Exam settings</a>
+    <a class="btn btn-secondary" href="{{ url_for('admin.results', exam_id=exam.id) }}">Results</a>
+  </div>
+</div>
+
+<div class="callout"><strong>How it works:</strong> special access overrides this student's normal start/end window only. The exam must still be published and not archived. If the student already submitted, check <strong>Reopen submitted attempt</strong> to let them continue with their existing answers and submit again.</div>
+
+<div class="settings-grid">
+  <section class="card">
+    <h2>Grant or update special access</h2>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Student
+        <select name="user_id" required>
+          <option value="">Choose a student…</option>
+          {% for student in students %}
+            <option value="{{ student.id }}">{{ student.name }} · {{ student.student_id or student.email }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="form-grid two">
+        <label>Special start time (Eastern)
+          <input type="datetime-local" name="start_at" value="{{ now_eastern.strftime('%Y-%m-%dT%H:%M') }}">
+          <small>Leave as shown to open access now, or choose a future make-up time.</small>
+        </label>
+        <label>Special end time (Eastern)
+          <input type="datetime-local" name="end_at" min="{{ now_eastern.strftime('%Y-%m-%dT%H:%M') }}" required>
+          <small>Required. Access closes automatically at this time.</small>
+        </label>
+      </div>
+      <label>Duration override (minutes)
+        <input type="number" name="duration_minutes" min="1" placeholder="{{ exam.duration_minutes }}">
+        <small>Optional. Leave blank to use the normal {{ exam.duration_minutes }}-minute duration.</small>
+      </label>
+      <label>Reason / instructor note
+        <textarea name="reason" rows="3" placeholder="Example: Approved make-up exam or technical interruption"></textarea>
+      </label>
+      <label class="toggle-row">
+        <span><strong>Reopen submitted attempt</strong><small>If this student already submitted, preserve their answers, clear the old grading state, and let them continue/resubmit.</small></span>
+        <input type="checkbox" name="reopen_submitted">
+      </label>
+      <div class="sticky-save"><button class="btn btn-primary">Save special access</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Normal exam window</h2>
+    <div class="detail-list">
+      <div><span>Published</span><strong>{{ 'Yes' if exam.published else 'No' }}</strong></div>
+      <div><span>Start</span><strong>{{ (exam.start_at|eastern_input|replace('T',' ')) if exam.start_at else 'No start restriction' }}</strong></div>
+      <div><span>End</span><strong>{{ (exam.end_at|eastern_input|replace('T',' ')) if exam.end_at else 'No end restriction' }}</strong></div>
+      <div><span>Duration</span><strong>{{ exam.duration_minutes }} minutes</strong></div>
+    </div>
+    <p class="muted">Special access does not change these settings for any other student.</p>
+  </section>
+</div>
+
+<section class="card mt-lg">
+  <div class="card-head"><div><h2>Current student exceptions</h2><p>{{ exceptions|length }} configured</p></div></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Student</th><th>Special window</th><th>Duration</th><th>Attempt</th><th>Reason</th><th></th></tr></thead>
+    <tbody>
+      {% for x in exceptions %}
+      {% set a = attempts.get(x.user_id) %}
+      <tr>
+        <td><strong>{{ x.user.name }}</strong><br><small>{{ x.user.student_id or x.user.email }}</small></td>
+        <td>{{ x.start_at|eastern_input|replace('T',' ') }}<br><small>to {{ x.end_at|eastern_input|replace('T',' ') }}</small></td>
+        <td>{{ x.duration_minutes or exam.duration_minutes }} min</td>
+        <td><span class="pill {{ 'pill-green' if a and a.status == 'in_progress' else '' }}">{{ (a.status|replace('_',' ')|title) if a else 'Not started' }}</span></td>
+        <td>{{ x.reason or '—' }}</td>
+        <td><form method="post" action="{{ url_for('admin.exam_exception_delete', exception_id=x.id) }}" onsubmit="return confirm('Remove special access for {{ x.user.name|e }}?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="link-button danger-link">Remove</button></form></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6"><div class="empty">No special access has been granted for this exam.</div></td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endblock %}

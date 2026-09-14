@@ -21,7 +21,7 @@ from .extensions import db, socketio
 from .models import (
     User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
     PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
-    AttemptComment, StudentProfile,
+    AttemptComment, StudentProfile, ExamException,
 )
 from .grader import compile_cpp, run_cpp, grade_code
 
@@ -109,22 +109,47 @@ def effective_monitoring(exam, user_id):
     return bool(exam.monitoring_enabled)
 
 
-def exam_is_open(exam):
-    if is_archived(exam.id):
+def get_exam_exception(exam_id, user_id):
+    if not user_id:
+        return None
+    return ExamException.query.filter_by(
+        exam_id=exam_id, user_id=user_id, enabled=True
+    ).first()
+
+
+def exam_is_open(exam, user_id=None):
+    """Return whether the exam is currently available for this student.
+
+    A per-student exception overrides the normal start/end window, but it does
+    not override an archived or unpublished exam.
+    """
+    if is_archived(exam.id) or not exam.published:
         return False
+
+    exception = get_exam_exception(exam.id, user_id) if user_id else None
+    start_at = exception.start_at if exception else exam.start_at
+    end_at = exception.end_at if exception else exam.end_at
     now = utcnow()
-    if not exam.published:
+
+    if start_at and now < aware(start_at):
         return False
-    if exam.start_at and now < aware(exam.start_at):
-        return False
-    if exam.end_at and now > aware(exam.end_at):
+    if end_at and now > aware(end_at):
         return False
     return True
 
 
 def remaining_seconds(attempt):
-    duration_end = aware(attempt.started_at) + timedelta(minutes=attempt.exam.duration_minutes)
-    hard_end = aware(attempt.exam.end_at) if attempt.exam.end_at else duration_end
+    exception = get_exam_exception(attempt.exam_id, attempt.user_id)
+    duration_minutes = (
+        exception.duration_minutes
+        if exception and exception.duration_minutes
+        else attempt.exam.duration_minutes
+    )
+    duration_end = aware(attempt.started_at) + timedelta(minutes=duration_minutes)
+    hard_end = (
+        aware(exception.end_at) if exception and exception.end_at
+        else (aware(attempt.exam.end_at) if attempt.exam.end_at else duration_end)
+    )
     end = min(duration_end, hard_end)
     return max(0, int((end - utcnow()).total_seconds()))
 
@@ -713,6 +738,7 @@ def delete_student(user_id):
 
     # Delete per-student extension records first because they reference user.id.
     MonitoringOverride.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    ExamException.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     StudentProfile.query.filter_by(user_id=user.id).delete(synchronize_session=False)
 
     # Deleting each Attempt via the ORM triggers the existing cascades for
@@ -869,6 +895,7 @@ def exam_delete(exam_id):
     # Delete extension records first, then attempts (whose answers/events/comments
     # cascade), then the exam and questions/test cases.
     MonitoringOverride.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
+    ExamException.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
     db.session.query(ExamPortalSettings).filter_by(exam_id=exam.id).delete(synchronize_session=False)
     db.session.query(ExamArchive).filter_by(exam_id=exam.id).delete(synchronize_session=False)
     for attempt in Attempt.query.filter_by(exam_id=exam.id).all():
@@ -878,6 +905,104 @@ def exam_delete(exam_id):
     db.session.commit()
     flash("Exam and all associated attempts, grades, and monitoring records were permanently deleted.", "success")
     return redirect(url_for("admin.exams"))
+
+
+@admin_bp.route("/exams/<int:exam_id>/exceptions", methods=["GET", "POST"])
+@admin_required
+def exam_exceptions(exam_id):
+    exam = db.get_or_404(Exam, exam_id)
+    students = User.query.filter_by(role="student", active=True).order_by(User.name.asc()).all()
+
+    if request.method == "POST":
+        try:
+            user_id = int(request.form.get("user_id", "0"))
+        except ValueError:
+            user_id = 0
+        student = db.session.get(User, user_id)
+        if not student or student.role != "student":
+            flash("Choose a valid student.", "danger")
+            return redirect(url_for("admin.exam_exceptions", exam_id=exam.id))
+
+        raw_start = (request.form.get("start_at") or "").strip()
+        raw_end = (request.form.get("end_at") or "").strip()
+        start_at = parse_local_datetime(raw_start) if raw_start else utcnow()
+        end_at = parse_local_datetime(raw_end)
+        errors = []
+        if raw_start and start_at is None:
+            errors.append("Exception start time is invalid.")
+        if not raw_end or end_at is None:
+            errors.append("A valid exception end time is required.")
+        if end_at and end_at <= utcnow():
+            errors.append("Exception end time must be in the future.")
+        if start_at and end_at and end_at <= start_at:
+            errors.append("Exception end time must be later than the exception start time.")
+
+        duration_raw = (request.form.get("duration_minutes") or "").strip()
+        duration_minutes = None
+        if duration_raw:
+            try:
+                duration_minutes = int(duration_raw)
+                if duration_minutes < 1:
+                    raise ValueError
+            except ValueError:
+                errors.append("Extra-access duration must be at least 1 minute.")
+
+        if errors:
+            for error in errors:
+                flash(error, "danger")
+            return redirect(url_for("admin.exam_exceptions", exam_id=exam.id))
+
+        exception = ExamException.query.filter_by(exam_id=exam.id, user_id=student.id).first()
+        if not exception:
+            exception = ExamException(exam_id=exam.id, user_id=student.id)
+            db.session.add(exception)
+        exception.start_at = start_at
+        exception.end_at = end_at
+        exception.duration_minutes = duration_minutes
+        exception.reason = (request.form.get("reason") or "").strip()[:500]
+        exception.enabled = True
+
+        attempt = Attempt.query.filter_by(exam_id=exam.id, user_id=student.id).order_by(Attempt.id.desc()).first()
+        if "reopen_submitted" in request.form and attempt and attempt.status == "submitted":
+            attempt.status = "in_progress"
+            attempt.submitted_at = None
+            attempt.score = 0.0
+            attempt.started_at = start_at if start_at and start_at > utcnow() else utcnow()
+            for answer in attempt.answers:
+                answer.score = 0.0
+                answer.feedback = ""
+                answer.graded_at = None
+            record_event(
+                attempt, "exam_reopened",
+                f"Instructor reopened exam with special access until {end_at.isoformat()}",
+            )
+
+        db.session.commit()
+        flash(f"Special exam access saved for {student.name}.", "success")
+        return redirect(url_for("admin.exam_exceptions", exam_id=exam.id))
+
+    exceptions = (ExamException.query.filter_by(exam_id=exam.id)
+                  .order_by(ExamException.updated_at.desc()).all())
+    attempts = {
+        a.user_id: a for a in Attempt.query.filter_by(exam_id=exam.id)
+        .order_by(Attempt.id.asc()).all()
+    }
+    return render_template(
+        "admin/exceptions.html", exam=exam, students=students, exceptions=exceptions,
+        attempts=attempts, now_eastern=datetime.now(ZoneInfo("America/New_York")),
+    )
+
+
+@admin_bp.route("/exam-exceptions/<int:exception_id>/delete", methods=["POST"])
+@admin_required
+def exam_exception_delete(exception_id):
+    exception = db.get_or_404(ExamException, exception_id)
+    exam_id = exception.exam_id
+    student_name = exception.user.name
+    db.session.delete(exception)
+    db.session.commit()
+    flash(f"Special access removed for {student_name}.", "success")
+    return redirect(url_for("admin.exam_exceptions", exam_id=exam_id))
 
 
 @admin_bp.route("/exams/<int:exam_id>/questions/new", methods=["GET", "POST"])
@@ -1121,13 +1246,19 @@ def dashboard():
     archived_ids = {x.exam_id for x in ExamArchive.query.all()}
     exams = [e for e in Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all() if e.id not in archived_ids]
     attempts = {a.exam_id: a for a in Attempt.query.filter_by(user_id=current_user.id).all()}
+    exceptions = {
+        x.exam_id: x for x in ExamException.query.filter_by(
+            user_id=current_user.id, enabled=True
+        ).all()
+    }
     settings = get_portal_settings()
     summaries = course_summaries_for_user(current_user.id)
     performance = performance_rows_for_user(current_user.id)
     return render_template(
-        "student/dashboard.html", exams=exams, attempts=attempts, exam_is_open=exam_is_open,
-        settings=settings, summaries=summaries, performance=performance,
-        results_released=results_released,
+        "student/dashboard.html", exams=exams, attempts=attempts,
+        exam_is_open=lambda exam: exam_is_open(exam, current_user.id),
+        exceptions=exceptions, settings=settings, summaries=summaries,
+        performance=performance, results_released=results_released,
     )
 
 
@@ -1150,8 +1281,8 @@ def grades():
 @student_required
 def start_exam(exam_id):
     exam = db.get_or_404(Exam, exam_id)
-    if not exam_is_open(exam):
-        flash("This exam is not currently open.", "danger")
+    if not exam_is_open(exam, current_user.id):
+        flash("This exam is not currently open for your account.", "danger")
         return redirect(url_for("student.dashboard"))
     attempt = Attempt.query.filter_by(user_id=current_user.id, exam_id=exam.id).first()
     if attempt and attempt.status == "submitted":
@@ -1179,6 +1310,9 @@ def take_exam(attempt_id):
         abort(403)
     if attempt.status == "submitted":
         return redirect(url_for("student.result", attempt_id=attempt.id))
+    if not exam_is_open(attempt.exam, current_user.id):
+        flash("This exam is not currently open for your account.", "warning")
+        return redirect(url_for("student.dashboard"))
     if remaining_seconds(attempt) <= 0:
         grade_attempt(attempt)
         return redirect(url_for("student.result", attempt_id=attempt.id))
@@ -1200,6 +1334,8 @@ def save_answer(attempt_id):
     attempt = db.get_or_404(Attempt, attempt_id)
     if attempt.user_id != current_user.id or attempt.status != "in_progress":
         abort(403)
+    if not exam_is_open(attempt.exam, current_user.id):
+        return jsonify({"ok": False, "expired": True, "error": "Exam access window is closed."}), 409
     if remaining_seconds(attempt) <= 0:
         grade_attempt(attempt)
         return jsonify({"ok": False, "expired": True}), 409
@@ -1257,7 +1393,9 @@ def run_code(attempt_id):
 
 def _execution_request(attempt_id):
     attempt = db.get_or_404(Attempt, attempt_id)
-    if attempt.user_id != current_user.id or attempt.status != "in_progress" or remaining_seconds(attempt) <= 0:
+    if (attempt.user_id != current_user.id or attempt.status != "in_progress"
+            or not exam_is_open(attempt.exam, current_user.id)
+            or remaining_seconds(attempt) <= 0):
         abort(403)
     data = request.get_json(silent=True) or {}
     question = db.get_or_404(Question, int(data.get("question_id", 0)))
