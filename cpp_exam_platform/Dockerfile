@@ -22,4 +22,4 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Render supplies PORT at runtime (normally 10000). The shell form below lets
 # us expand it while still providing a local fallback.
-CMD ["sh", "-c", "gunicorn --workers 1 --threads 100 --timeout 120 --keep-alive 5 --access-logfile - --error-logfile - --bind 0.0.0.0:${PORT:-10000} run:app"]
+CMD ["sh", "-c", "python manage.py init-admin && exec gunicorn --workers 1 --threads 100 --timeout 120 --keep-alive 5 --access-logfile - --error-logfile - --bind 0.0.0.0:${PORT:-10000} run:app"]
