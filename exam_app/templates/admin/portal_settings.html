@@ -1,0 +1,20 @@
+{% extends 'base.html' %}{% block title %}Student View Settings{% endblock %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">STUDENT PORTAL</span><h1>Visibility & performance settings</h1><p>Control exactly which grades, feedback, and anonymous class-comparison metrics students can see.</p></div></div>
+<form method="post" class="card settings-card"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="settings-grid toggle-grid">
+    <label class="toggle-row"><input type="checkbox" name="show_current_grade" {% if settings.show_current_grade %}checked{% endif %}><span><strong>Current course percentage</strong><small>Running grade from released assessments.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_letter_grade" {% if settings.show_letter_grade %}checked{% endif %}><span><strong>Letter grade</strong><small>Shows A, B+, C, etc.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_grade_points" {% if settings.show_grade_points %}checked{% endif %}><span><strong>Grade-point equivalent</strong><small>Displays a 4.0-scale estimate; not an official university GPA.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_past_results" {% if settings.show_past_results %}checked{% endif %}><span><strong>Past test results</strong><small>Students can revisit released assessment scores.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_comments" {% if settings.show_comments %}checked{% endif %}><span><strong>Instructor comments</strong><small>Shows overall and question-level feedback.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_question_breakdown" {% if settings.show_question_breakdown %}checked{% endif %}><span><strong>Question-by-question breakdown</strong><small>Shows points earned per question after release.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_class_comparison" {% if settings.show_class_comparison %}checked{% endif %}><span><strong>Anonymous class comparison</strong><small>Class average, median, high, and low.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_percentile" {% if settings.show_percentile %}checked{% endif %}><span><strong>Percentile / top percentage</strong><small>Shows relative position without naming classmates.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_distribution" {% if settings.show_distribution %}checked{% endif %}><span><strong>Score distribution</strong><small>Anonymous score-range histogram.</small></span></label>
+    <label class="toggle-row"><input type="checkbox" name="show_exact_rank" {% if settings.show_exact_rank %}checked{% endif %}><span><strong>Exact class rank</strong><small>Off by default. Percentile is usually less intrusive.</small></span></label>
+  </div>
+  <div class="callout"><strong>Grade-point note:</strong> BeaconCode reports an assessment-based grade-point equivalent only. It is not the student's official UMass Boston cumulative GPA.</div>
+  <div class="form-actions"><button class="btn btn-primary">Save student view settings</button></div>
+</form>
+{% endblock %}

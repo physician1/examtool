@@ -1,0 +1,47 @@
+{% extends 'base.html' %}{% block title %}Student Dashboard{% endblock %}
+{% block content %}
+<div class="student-wrap">
+  <div class="student-hero"><span class="eyebrow">STUDENT PORTAL</span><h1>Welcome, {{ current_user.name.split()[0] }}.</h1><p>Take available assessments, review released grades, and follow your progress over time.</p></div>
+
+  {% if settings.show_current_grade and summaries %}
+  <section class="performance-strip">
+    {% for s in summaries %}
+    <article class="performance-card primary-performance">
+      <span class="course-chip">{{ s.course_code }}</span>
+      <div class="performance-main"><strong>{{ s.percent }}%</strong><span>Current grade</span></div>
+      <div class="performance-meta">
+        {% if settings.show_letter_grade %}<span><b>{{ s.letter }}</b> Letter grade</span>{% endif %}
+        {% if settings.show_grade_points %}<span><b>{{ '%.1f'|format(s.grade_points) }}</b> Grade-point eq.</span>{% endif %}
+        {% if settings.show_class_comparison and s.class_average is not none %}<span><b>{{ s.class_average }}%</b> Class avg.</span>{% endif %}
+        {% if settings.show_percentile and s.percentile %}<span><b>{{ s.percentile }}th</b> Percentile</span>{% endif %}
+      </div>
+      <small class="muted">Based on {{ s.completed }} released assessment{{ '' if s.completed==1 else 's' }}.</small>
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="section-head-inline"><div><span class="eyebrow">ASSESSMENTS</span><h2>Available & active exams</h2></div><a href="{{ url_for('student.grades') }}">View performance →</a></div>
+  <div class="exam-cards">
+  {% for exam in exams %}{% set a=attempts.get(exam.id) %}
+    <article class="exam-card">
+      <div class="exam-card-top"><span class="course-chip">{{ exam.course_code }}</span><span class="pill {{ 'pill-green' if a and a.status=='submitted' else '' }}">{{ 'Submitted' if a and a.status=='submitted' else ('In progress' if a else 'Available') }}</span></div>
+      <h2>{{ exam.title }}</h2>{% if exceptions.get(exam.id) %}<div class="callout"><strong>Special access granted.</strong> Your individual exam window ends {{ exceptions.get(exam.id).end_at|eastern_input|replace('T',' ') }} Eastern.</div>{% endif %}<p>{{ exam.description or 'C++ course assessment' }}</p>
+      <div class="exam-facts"><span><strong>{{ exam.duration_minutes }}</strong> min</span><span><strong>{{ exam.questions|length }}</strong> questions</span><span><strong>{{ 'On' if exam.monitoring_enabled else 'Off' }}</strong> monitoring</span></div>
+      {% if a and a.status=='submitted' %}<a class="btn btn-secondary btn-block" href="{{ url_for('student.result', attempt_id=a.id) }}">{{ 'View result' if results_released(exam) else 'View submission' }}</a>
+      {% elif a %}<a class="btn btn-primary btn-block" href="{{ url_for('student.take_exam', attempt_id=a.id) }}">Continue exam</a>
+      {% elif exam_is_open(exam) %}<form action="{{ url_for('student.start_exam', exam_id=exam.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary btn-block">Start exam</button></form>
+      {% else %}<button class="btn btn-disabled btn-block" disabled>Not currently open</button>{% endif %}
+    </article>
+  {% else %}<div class="empty card">No exams are currently published.</div>{% endfor %}
+  </div>
+
+  {% if settings.show_past_results and performance %}
+  <section class="card portal-section"><div class="card-head"><div><h2>Recent released results</h2><p>Your latest graded assessments</p></div><a href="{{ url_for('student.grades') }}">View all</a></div>
+    <div class="table-wrap"><table><thead><tr><th>Assessment</th><th>Score</th>{% if settings.show_class_comparison %}<th>Class avg.</th>{% endif %}<th></th></tr></thead><tbody>
+    {% for row in performance[-5:]|reverse %}<tr><td><strong>{{ row.attempt.exam.title }}</strong><br><small>{{ row.attempt.exam.course_code }}</small></td><td><strong>{{ row.percent }}%</strong></td>{% if settings.show_class_comparison %}<td>{{ row.class_average if row.class_average is not none else '—' }}{% if row.class_average is not none %}%{% endif %}</td>{% endif %}<td><a href="{{ url_for('student.result', attempt_id=row.attempt.id) }}">Details →</a></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

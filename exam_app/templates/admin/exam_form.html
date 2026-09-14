@@ -1,0 +1,40 @@
+{% extends 'base.html' %}{% block title %}{{ 'Create Exam' if is_new else exam.title }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">{{ 'NEW ASSESSMENT' if is_new else 'EXAM SETTINGS' }}</span><h1>{{ 'Create exam' if is_new else exam.title }}</h1><p>Configure timing, monitoring, and student experience.</p></div>{% if not is_new %}<div class="head-actions"><a class="btn btn-secondary" href="{{ url_for('admin.live_monitor', exam_id=exam.id) }}">Live monitor</a><a class="btn btn-secondary" href="{{ url_for('admin.results', exam_id=exam.id) }}">Results</a><a class="btn btn-secondary" href="{{ url_for('admin.exam_exceptions', exam_id=exam.id) }}">Student exceptions</a></div>{% endif %}</div>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="settings-grid"><section class="card"><h2>Exam details</h2><div class="form-grid two"><label>Exam title<input name="title" value="{{ exam.title or '' }}" required></label><label>Course code<input name="course_code" value="{{ exam.course_code or 'CS / C++' }}" required></label></div><label>Description<textarea name="description" rows="4">{{ exam.description or '' }}</textarea></label><div class="form-grid three"><label>Duration (minutes)<input type="number" min="1" name="duration_minutes" value="{{ exam.duration_minutes or 60 }}" required></label><label>Start time (Eastern)<input id="exam-start-at" type="datetime-local" name="start_at" value="{{ exam.start_at|eastern_input }}"></label><label>End time (Eastern)<input id="exam-end-at" type="datetime-local" name="end_at" min="{{ eastern_now_input() }}" data-now-eastern="{{ eastern_now_input() }}" value="{{ exam.end_at|eastern_input }}"><small>Must be in the future and later than the start time.</small></label></div></section>
+<section class="card"><h2>Security & behavior</h2><div class="toggle-list">
+<label class="toggle-row"><span><strong>Publish exam</strong><small>Students can see the exam when its time window is open.</small></span><input type="checkbox" name="published" {% if exam.published %}checked{% endif %}></label>
+<label class="toggle-row"><span><strong>Enable browser monitoring</strong><small>Record visibility, focus, fullscreen, and restricted interaction events.</small></span><input type="checkbox" name="monitoring_enabled" {% if exam.monitoring_enabled %}checked{% endif %}></label>
+<label class="toggle-row"><span><strong>Require fullscreen</strong><small>Prompt students to enter fullscreen and record exits.</small></span><input type="checkbox" name="require_fullscreen" {% if exam.require_fullscreen %}checked{% endif %}></label>
+<label class="toggle-row"><span><strong>Block copy & paste</strong><small>Prevent copy/paste inside the exam page and log attempts.</small></span><input type="checkbox" name="block_copy_paste" {% if exam.block_copy_paste %}checked{% endif %}></label>
+<label class="toggle-row"><span><strong>Shuffle questions</strong><small>Use a stable student-specific question order.</small></span><input type="checkbox" name="shuffle_questions" {% if exam.shuffle_questions %}checked{% endif %}></label>
+<label class="toggle-row"><span><strong>Show results immediately</strong><small>Reveal score after submission. Otherwise show only submission confirmation.</small></span><input type="checkbox" name="show_results_immediately" {% if exam.show_results_immediately %}checked{% endif %}></label>
+</div></section></div>
+<div class="sticky-save"><a class="btn btn-ghost" href="{{ url_for('admin.exams') }}">Back</a><button class="btn btn-primary">{{ 'Create exam' if is_new else 'Save settings' }}</button></div></form>
+{% if not is_new %}
+<section class="card mt-lg"><div class="card-head"><div><h2>Questions</h2><p>{{ exam.questions|length }} configured</p></div><a class="btn btn-primary" href="{{ url_for('admin.question_new', exam_id=exam.id) }}">+ Add question</a></div>
+<div class="question-list">{% for q in exam.questions %}<div class="question-row"><span class="qnum">{{ q.position }}</span><div class="qmain"><div class="qmeta"><span class="pill">{{ q.question_type|upper }}</span><span>{{ q.points }} pts</span>{% if q.question_type == 'code' %}<span>{{ 'Compile on' if q.allow_compile else 'Compile off' }}</span><span>{{ 'Run on' if q.allow_run else 'Run off' }}</span>{% endif %}</div><strong>{{ q.prompt[:120] }}{% if q.prompt|length > 120 %}…{% endif %}</strong></div><a class="btn btn-ghost btn-sm" href="{{ url_for('admin.question_edit', question_id=q.id) }}">Edit</a></div>{% else %}<div class="empty">No questions yet. Add MCQ, short-answer, or C++ coding questions.</div>{% endfor %}</div></section>
+{% endif %}
+
+<script>
+(() => {
+  const start = document.getElementById('exam-start-at');
+  const end = document.getElementById('exam-end-at');
+  if (!end) return;
+  const serverNow = end.dataset.nowEastern || '';
+  function validateSchedule() {
+    const minimum = start && start.value && start.value > serverNow ? start.value : serverNow;
+    end.min = minimum;
+    if (end.value && end.value < minimum) {
+      end.setCustomValidity('End time must be in the future and later than the start time.');
+    } else {
+      end.setCustomValidity('');
+    }
+  }
+  if (start) start.addEventListener('change', validateSchedule);
+  end.addEventListener('change', validateSchedule);
+  validateSchedule();
+})();
+</script>
+{% endblock %}
