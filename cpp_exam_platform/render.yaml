@@ -4,8 +4,8 @@ services:
     runtime: docker
     plan: free
     region: virginia
-    dockerfilePath: ./Dockerfile
     rootDir: cpp_exam_platform
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     initialDeployHook: python manage.py init-admin
     envVars:

@@ -2,25 +2,43 @@ import csv
 import io
 import json
 import random
+import statistics
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from functools import wraps
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash, jsonify,
-    abort, Response, current_app
+    abort, Response
 )
 from flask_login import login_user, logout_user, login_required, current_user
 from flask_socketio import join_room
 
 from .extensions import db, socketio
-from .models import User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow
+from .models import (
+    User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
+    PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
+    AttemptComment,
+)
 from .grader import compile_cpp, run_cpp, grade_code
 
 main_bp = Blueprint("main", __name__)
 auth_bp = Blueprint("auth", __name__)
 admin_bp = Blueprint("admin", __name__)
 student_bp = Blueprint("student", __name__)
+
+VIOLATION_TYPES = {
+    "tab_hidden", "window_blur", "fullscreen_exit", "copy_attempt",
+    "paste_attempt", "context_menu", "page_leave",
+}
+
+# A conventional 4.0 conversion for the *assessment estimate* shown in the
+# portal. It is deliberately labelled as an estimate, not an official UMass GPA.
+GRADE_SCALE = [
+    (93, "A", 4.0), (90, "A-", 3.7), (87, "B+", 3.3), (83, "B", 3.0),
+    (80, "B-", 2.7), (77, "C+", 2.3), (73, "C", 2.0), (70, "C-", 1.7),
+    (67, "D+", 1.3), (63, "D", 1.0), (60, "D-", 0.7), (0, "F", 0.0),
+]
 
 
 def admin_required(fn):
@@ -61,7 +79,36 @@ def aware(dt):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def get_portal_settings():
+    settings = db.session.get(PortalSettings, 1)
+    if not settings:
+        settings = PortalSettings(id=1)
+        db.session.add(settings)
+        db.session.commit()
+    return settings
+
+
+def is_archived(exam_id):
+    return db.session.get(ExamArchive, exam_id) is not None
+
+
+def results_released(exam):
+    if exam.show_results_immediately:
+        return True
+    cfg = db.session.get(ExamPortalSettings, exam.id)
+    return bool(cfg and cfg.results_released)
+
+
+def effective_monitoring(exam, user_id):
+    override = MonitoringOverride.query.filter_by(exam_id=exam.id, user_id=user_id).first()
+    if override is not None:
+        return bool(override.enabled)
+    return bool(exam.monitoring_enabled)
+
+
 def exam_is_open(exam):
+    if is_archived(exam.id):
+        return False
     now = utcnow()
     if not exam.published:
         return False
@@ -82,10 +129,52 @@ def remaining_seconds(attempt):
 def get_or_make_answer(attempt, question):
     answer = Answer.query.filter_by(attempt_id=attempt.id, question_id=question.id).first()
     if not answer:
-        answer = Answer(attempt_id=attempt.id, question_id=question.id, answer_text=question.starter_code or "" if question.question_type == "code" else "")
+        initial = (question.starter_code or "") if question.question_type == "code" else ""
+        answer = Answer(attempt_id=attempt.id, question_id=question.id, answer_text=initial)
         db.session.add(answer)
         db.session.flush()
     return answer
+
+
+def grade_band(percent):
+    pct = float(percent or 0)
+    for threshold, letter, gp in GRADE_SCALE:
+        if pct >= threshold:
+            return letter, gp
+    return "F", 0.0
+
+
+def total_points(exam):
+    return float(sum(q.points for q in exam.questions))
+
+
+def attempt_percent(attempt):
+    possible = total_points(attempt.exam)
+    return round((attempt.score / possible) * 100, 1) if possible > 0 else 0.0
+
+
+def record_event(attempt, event_type, details="", *, violation=False, emit=True):
+    event = MonitorEvent(
+        attempt_id=attempt.id,
+        event_type=str(event_type)[:80],
+        details=str(details or "")[:500],
+    )
+    db.session.add(event)
+    if violation:
+        attempt.violations += 1
+    db.session.flush()
+    if emit:
+        socketio.emit("monitor_event", {
+            "student": attempt.user.name,
+            "student_id": attempt.user.student_id,
+            "attempt_id": attempt.id,
+            "type": event.event_type,
+            "details": event.details,
+            "violation": bool(violation),
+            "violations": attempt.violations,
+            "time": event.created_at.isoformat() if event.created_at else utcnow().isoformat(),
+        }, room="admins")
+    return event
 
 
 def grade_attempt(attempt):
@@ -107,13 +196,99 @@ def grade_attempt(attempt):
     attempt.score = round(total, 2)
     attempt.status = "submitted"
     attempt.submitted_at = utcnow()
+    record_event(attempt, "exam_submitted", f"Final score recorded: {attempt.score}", emit=True)
     db.session.commit()
 
 
+def exam_class_stats(exam, student_attempt=None):
+    possible = total_points(exam)
+    submitted = Attempt.query.filter_by(exam_id=exam.id, status="submitted").all()
+    scores = [round((a.score / possible) * 100, 1) if possible else 0.0 for a in submitted]
+    if not scores:
+        return None
+    avg = round(sum(scores) / len(scores), 1)
+    median = round(statistics.median(scores), 1)
+    stats = {
+        "count": len(scores), "average": avg, "median": median,
+        "highest": max(scores), "lowest": min(scores),
+        "distribution": [
+            sum(1 for x in scores if x < 60),
+            sum(1 for x in scores if 60 <= x < 70),
+            sum(1 for x in scores if 70 <= x < 80),
+            sum(1 for x in scores if 80 <= x < 90),
+            sum(1 for x in scores if x >= 90),
+        ],
+    }
+    if student_attempt is not None:
+        mine = attempt_percent(student_attempt)
+        below_or_equal = sum(1 for x in scores if x <= mine)
+        stats["percentile"] = min(100, max(1, round(100 * below_or_equal / len(scores))))
+        sorted_desc = sorted(scores, reverse=True)
+        stats["rank"] = sorted_desc.index(mine) + 1 if mine in sorted_desc else None
+        stats["top_percent"] = max(1, round(100 * (stats["rank"] or len(scores)) / len(scores)))
+    return stats
+
+
+def released_attempts_for_user(user_id):
+    attempts = (Attempt.query.filter_by(user_id=user_id, status="submitted")
+                .order_by(Attempt.submitted_at.asc()).all())
+    return [a for a in attempts if results_released(a.exam) and not is_archived(a.exam_id)]
+
+
+def course_summaries_for_user(user_id):
+    attempts = released_attempts_for_user(user_id)
+    grouped = {}
+    for a in attempts:
+        grouped.setdefault(a.exam.course_code, []).append(a)
+    summaries = []
+    for course_code, items in grouped.items():
+        earned = sum(a.score for a in items)
+        possible = sum(total_points(a.exam) for a in items)
+        pct = round((earned / possible) * 100, 1) if possible else 0.0
+        letter, gp = grade_band(pct)
+
+        # Anonymous comparison of current released-course performance.
+        student_ids = [u.id for u in User.query.filter_by(role="student", active=True).all()]
+        class_pcts = []
+        for sid in student_ids:
+            other = [a for a in released_attempts_for_user(sid) if a.exam.course_code == course_code]
+            if not other:
+                continue
+            e = sum(a.score for a in other)
+            p = sum(total_points(a.exam) for a in other)
+            if p:
+                class_pcts.append((e / p) * 100)
+        class_avg = round(sum(class_pcts) / len(class_pcts), 1) if class_pcts else None
+        percentile = None
+        if class_pcts:
+            percentile = min(100, max(1, round(100 * sum(1 for x in class_pcts if x <= pct) / len(class_pcts))))
+        summaries.append({
+            "course_code": course_code, "earned": round(earned, 2), "possible": round(possible, 2),
+            "percent": pct, "letter": letter, "grade_points": gp,
+            "class_average": class_avg, "percentile": percentile, "completed": len(items),
+        })
+    return summaries
+
+
+def performance_rows_for_user(user_id):
+    rows = []
+    for a in released_attempts_for_user(user_id):
+        stats = exam_class_stats(a.exam, a)
+        rows.append({
+            "attempt": a,
+            "percent": attempt_percent(a),
+            "class_average": stats["average"] if stats else None,
+            "comment": a.comment_record.comment if a.comment_record else "",
+        })
+    return rows
+
+
+# -----------------------------------------------------------------------------
+# Main/auth
+# -----------------------------------------------------------------------------
+
 @main_bp.route("/healthz")
 def healthz():
-    # Lightweight health endpoint for Render. Avoids touching the database so
-    # deploy health checks can distinguish web-process health from DB outages.
     return {"status": "ok"}, 200
 
 
@@ -146,15 +321,23 @@ def logout():
     return redirect(url_for("auth.login"))
 
 
+# -----------------------------------------------------------------------------
+# Admin: overview/students/settings
+# -----------------------------------------------------------------------------
+
 @admin_bp.route("/")
 @admin_required
 def dashboard():
-    exams = Exam.query.order_by(Exam.created_at.desc()).all()
+    archived_ids = {x.exam_id for x in ExamArchive.query.all()}
+    exams = [e for e in Exam.query.order_by(Exam.created_at.desc()).all() if e.id not in archived_ids]
     students = User.query.filter_by(role="student").count()
     active_attempts = Attempt.query.filter_by(status="in_progress").count()
     submitted = Attempt.query.filter_by(status="submitted").count()
-    recent_events = MonitorEvent.query.order_by(MonitorEvent.created_at.desc()).limit(8).all()
-    return render_template("admin/dashboard.html", exams=exams, students=students, active_attempts=active_attempts, submitted=submitted, recent_events=recent_events)
+    recent_events = MonitorEvent.query.order_by(MonitorEvent.created_at.desc()).limit(10).all()
+    return render_template(
+        "admin/dashboard.html", exams=exams, students=students,
+        active_attempts=active_attempts, submitted=submitted, recent_events=recent_events,
+    )
 
 
 @admin_bp.route("/students", methods=["GET", "POST"])
@@ -219,10 +402,40 @@ def toggle_student(user_id):
     return redirect(url_for("admin.students"))
 
 
+@admin_bp.route("/student-view", methods=["GET", "POST"])
+@admin_required
+def portal_settings():
+    settings = get_portal_settings()
+    if request.method == "POST":
+        fields = [
+            "show_current_grade", "show_letter_grade", "show_grade_points",
+            "show_class_comparison", "show_percentile", "show_distribution",
+            "show_past_results", "show_comments", "show_question_breakdown",
+            "show_exact_rank",
+        ]
+        for field in fields:
+            setattr(settings, field, field in request.form)
+        db.session.commit()
+        flash("Student visibility settings saved.", "success")
+        return redirect(url_for("admin.portal_settings"))
+    return render_template("admin/portal_settings.html", settings=settings)
+
+
+# -----------------------------------------------------------------------------
+# Admin: exams/questions
+# -----------------------------------------------------------------------------
+
 @admin_bp.route("/exams")
 @admin_required
 def exams():
-    return render_template("admin/exams.html", exams=Exam.query.order_by(Exam.created_at.desc()).all())
+    show_archived = request.args.get("archived") == "1"
+    archived_ids = {x.exam_id for x in ExamArchive.query.all()}
+    items = Exam.query.order_by(Exam.created_at.desc()).all()
+    if show_archived:
+        items = [e for e in items if e.id in archived_ids]
+    else:
+        items = [e for e in items if e.id not in archived_ids]
+    return render_template("admin/exams.html", exams=items, show_archived=show_archived, archived_ids=archived_ids)
 
 
 @admin_bp.route("/exams/new", methods=["GET", "POST"])
@@ -243,7 +456,6 @@ def exam_new():
 
 
 def _populate_exam(exam):
-    """Validate and populate exam settings. Returns a list of validation errors."""
     raw_start = (request.form.get("start_at") or "").strip()
     raw_end = (request.form.get("end_at") or "").strip()
     start_at = parse_local_datetime(raw_start)
@@ -258,11 +470,9 @@ def _populate_exam(exam):
     now = utcnow()
     existing_end = aware(exam.end_at) if getattr(exam, "end_at", None) else None
     if end_at and end_at <= now:
-        # Permit reopening/saving a historical exam only when its old end time was not changed.
         unchanged_historical_end = existing_end and abs((end_at - existing_end).total_seconds()) < 60
         if not unchanged_historical_end:
             errors.append("End time must be in the future. You cannot schedule an exam to end in the past.")
-
     if start_at and end_at and end_at <= start_at:
         errors.append("End time must be later than the start time.")
 
@@ -306,16 +516,41 @@ def exam_edit(exam_id):
     return render_template("admin/exam_form.html", exam=exam, is_new=False)
 
 
+@admin_bp.route("/exams/<int:exam_id>/archive", methods=["POST"])
+@admin_required
+def exam_archive(exam_id):
+    exam = db.get_or_404(Exam, exam_id)
+    record = db.session.get(ExamArchive, exam.id)
+    if record:
+        db.session.delete(record)
+        flash("Exam restored from archive.", "success")
+    else:
+        db.session.add(ExamArchive(exam_id=exam.id))
+        flash("Exam archived. Student access is disabled, but results are preserved.", "success")
+    db.session.commit()
+    return redirect(url_for("admin.exams", archived=1 if not record else 0))
+
+
 @admin_bp.route("/exams/<int:exam_id>/delete", methods=["POST"])
 @admin_required
 def exam_delete(exam_id):
     exam = db.get_or_404(Exam, exam_id)
-    if Attempt.query.filter_by(exam_id=exam.id).first():
-        flash("This exam has attempts and cannot be deleted.", "danger")
-    else:
-        db.session.delete(exam)
-        db.session.commit()
-        flash("Exam deleted.", "success")
+    confirmation = (request.form.get("confirmation") or "").strip()
+    if confirmation not in {"DELETE", exam.title}:
+        flash('Permanent deletion cancelled. Type "DELETE" or the exact exam title to confirm.', "danger")
+        return redirect(url_for("admin.exams", archived=1 if is_archived(exam.id) else 0))
+
+    # Delete extension records first, then attempts (whose answers/events/comments
+    # cascade), then the exam and questions/test cases.
+    MonitoringOverride.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
+    db.session.query(ExamPortalSettings).filter_by(exam_id=exam.id).delete(synchronize_session=False)
+    db.session.query(ExamArchive).filter_by(exam_id=exam.id).delete(synchronize_session=False)
+    for attempt in Attempt.query.filter_by(exam_id=exam.id).all():
+        db.session.delete(attempt)
+    db.session.flush()
+    db.session.delete(exam)
+    db.session.commit()
+    flash("Exam and all associated attempts, grades, and monitoring records were permanently deleted.", "success")
     return redirect(url_for("admin.exams"))
 
 
@@ -400,13 +635,17 @@ def test_delete(test_id):
     return redirect(url_for("admin.question_edit", question_id=qid))
 
 
+# -----------------------------------------------------------------------------
+# Admin: monitoring, messaging, results
+# -----------------------------------------------------------------------------
+
 @admin_bp.route("/exams/<int:exam_id>/live")
 @admin_required
 def live_monitor(exam_id):
     exam = db.get_or_404(Exam, exam_id)
     attempts = Attempt.query.filter_by(exam_id=exam.id).order_by(Attempt.started_at.desc()).all()
     recent_events = (MonitorEvent.query.join(Attempt).filter(Attempt.exam_id == exam.id)
-                     .order_by(MonitorEvent.created_at.desc()).limit(100).all())
+                     .order_by(MonitorEvent.created_at.desc()).limit(150).all())
     return render_template("admin/live.html", exam=exam, attempts=attempts, recent_events=recent_events)
 
 
@@ -423,8 +662,42 @@ def live_data(exam_id):
             "status": a.status, "answered": answered, "total": len(exam.questions),
             "violations": a.violations, "score": a.score,
             "remaining": remaining_seconds(a) if a.status == "in_progress" else 0,
+            "monitoring": effective_monitoring(exam, a.user_id),
         })
     return jsonify(rows)
+
+
+@admin_bp.route("/attempts/<int:attempt_id>/monitoring-toggle", methods=["POST"])
+@admin_required
+def monitoring_toggle(attempt_id):
+    attempt = db.get_or_404(Attempt, attempt_id)
+    current = effective_monitoring(attempt.exam, attempt.user_id)
+    override = MonitoringOverride.query.filter_by(exam_id=attempt.exam_id, user_id=attempt.user_id).first()
+    if not override:
+        override = MonitoringOverride(exam_id=attempt.exam_id, user_id=attempt.user_id, enabled=not current)
+        db.session.add(override)
+    else:
+        override.enabled = not current
+    record_event(attempt, "monitoring_changed", f"Instructor set integrity monitoring to {'ON' if override.enabled else 'OFF'}")
+    db.session.commit()
+    socketio.emit("monitoring_status", {"enabled": override.enabled}, room=f"user:{attempt.user_id}")
+    return jsonify({"ok": True, "enabled": override.enabled})
+
+
+@admin_bp.route("/attempts/<int:attempt_id>/warning", methods=["POST"])
+@admin_required
+def send_warning(attempt_id):
+    attempt = db.get_or_404(Attempt, attempt_id)
+    data = request.get_json(silent=True) or {}
+    message = str(data.get("message") or "Please remain on the examination page. Your exam activity is being monitored.").strip()[:500]
+    record_event(attempt, "instructor_warning", message)
+    db.session.commit()
+    socketio.emit("student_warning", {
+        "message": message,
+        "violations": attempt.violations,
+        "source": "Instructor",
+    }, room=f"user:{attempt.user_id}")
+    return jsonify({"ok": True})
 
 
 @admin_bp.route("/exams/<int:exam_id>/results")
@@ -432,8 +705,32 @@ def live_data(exam_id):
 def results(exam_id):
     exam = db.get_or_404(Exam, exam_id)
     attempts = Attempt.query.filter_by(exam_id=exam.id).order_by(Attempt.submitted_at.desc()).all()
-    total_points = sum(q.points for q in exam.questions)
-    return render_template("admin/results.html", exam=exam, attempts=attempts, total_points=total_points)
+    return render_template(
+        "admin/results.html", exam=exam, attempts=attempts,
+        total_points=total_points(exam), released=results_released(exam),
+    )
+
+
+@admin_bp.route("/exams/<int:exam_id>/release-toggle", methods=["POST"])
+@admin_required
+def release_toggle(exam_id):
+    exam = db.get_or_404(Exam, exam_id)
+    cfg = db.session.get(ExamPortalSettings, exam.id)
+    if not cfg:
+        cfg = ExamPortalSettings(exam_id=exam.id, results_released=not exam.show_results_immediately)
+        db.session.add(cfg)
+    else:
+        cfg.results_released = not results_released(exam)
+    # Immediate-release setting itself always wins, so turn it off if instructor
+    # explicitly holds results from the Results page.
+    if results_released(exam) and request.form.get("action") == "hold":
+        exam.show_results_immediately = False
+        cfg.results_released = False
+    elif request.form.get("action") == "release":
+        cfg.results_released = True
+    db.session.commit()
+    flash("Student result visibility updated.", "success")
+    return redirect(url_for("admin.results", exam_id=exam.id))
 
 
 @admin_bp.route("/attempts/<int:attempt_id>/review", methods=["GET", "POST"])
@@ -445,12 +742,27 @@ def review_attempt(attempt_id):
         for ans in attempt.answers:
             key = f"score_{ans.id}"
             if key in request.form:
-                ans.score = max(0.0, min(ans.question.points, float(request.form[key])))
+                try:
+                    ans.score = max(0.0, min(ans.question.points, float(request.form[key])))
+                except ValueError:
+                    pass
+            feedback_key = f"feedback_{ans.id}"
+            if feedback_key in request.form:
+                ans.feedback = request.form.get(feedback_key, "").strip()[:5000]
             total += ans.score
         attempt.score = round(total, 2)
+        comment_text = request.form.get("instructor_comment", "").strip()[:10000]
+        comment = attempt.comment_record
+        if not comment:
+            comment = AttemptComment(attempt_id=attempt.id, comment=comment_text)
+            db.session.add(comment)
+        else:
+            comment.comment = comment_text
+        record_event(attempt, "grade_reviewed", f"Instructor updated score to {attempt.score}")
         db.session.commit()
-        flash("Scores updated.", "success")
-    return render_template("admin/review.html", attempt=attempt)
+        flash("Scores and feedback updated.", "success")
+    events = MonitorEvent.query.filter_by(attempt_id=attempt.id).order_by(MonitorEvent.created_at.desc()).limit(100).all()
+    return render_template("admin/review.html", attempt=attempt, events=events)
 
 
 @admin_bp.route("/exams/<int:exam_id>/results.csv")
@@ -460,18 +772,52 @@ def results_csv(exam_id):
     attempts = Attempt.query.filter_by(exam_id=exam.id).all()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["student_id", "name", "email", "status", "score", "violations", "started_at", "submitted_at"])
+    writer.writerow(["student_id", "name", "email", "status", "score", "percent", "violations", "started_at", "submitted_at", "comment"])
     for a in attempts:
-        writer.writerow([a.user.student_id, a.user.name, a.user.email, a.status, a.score, a.violations, a.started_at, a.submitted_at or ""])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=exam_{exam.id}_results.csv"})
+        writer.writerow([
+            a.user.student_id, a.user.name, a.user.email, a.status, a.score,
+            attempt_percent(a) if a.status == "submitted" else "", a.violations,
+            a.started_at, a.submitted_at or "", a.comment_record.comment if a.comment_record else "",
+        ])
+    return Response(
+        output.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=exam_{exam.id}_results.csv"},
+    )
 
+
+# -----------------------------------------------------------------------------
+# Student dashboard/results/exam
+# -----------------------------------------------------------------------------
 
 @student_bp.route("/")
 @student_required
 def dashboard():
-    exams = Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all()
+    archived_ids = {x.exam_id for x in ExamArchive.query.all()}
+    exams = [e for e in Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all() if e.id not in archived_ids]
     attempts = {a.exam_id: a for a in Attempt.query.filter_by(user_id=current_user.id).all()}
-    return render_template("student/dashboard.html", exams=exams, attempts=attempts, exam_is_open=exam_is_open)
+    settings = get_portal_settings()
+    summaries = course_summaries_for_user(current_user.id)
+    performance = performance_rows_for_user(current_user.id)
+    return render_template(
+        "student/dashboard.html", exams=exams, attempts=attempts, exam_is_open=exam_is_open,
+        settings=settings, summaries=summaries, performance=performance,
+        results_released=results_released,
+    )
+
+
+@student_bp.route("/grades")
+@student_required
+def grades():
+    settings = get_portal_settings()
+    summaries = course_summaries_for_user(current_user.id)
+    performance = performance_rows_for_user(current_user.id)
+    all_attempts = (Attempt.query.filter_by(user_id=current_user.id, status="submitted")
+                    .order_by(Attempt.submitted_at.desc()).all())
+    return render_template(
+        "student/grades.html", settings=settings, summaries=summaries,
+        performance=performance, attempts=all_attempts, results_released=results_released,
+        attempt_percent=attempt_percent,
+    )
 
 
 @student_bp.route("/exams/<int:exam_id>/start", methods=["POST"])
@@ -490,7 +836,11 @@ def start_exam(exam_id):
         db.session.add(attempt)
         db.session.flush()
         for q in exam.questions:
-            db.session.add(Answer(attempt_id=attempt.id, question_id=q.id, answer_text=(q.starter_code or "") if q.question_type == "code" else ""))
+            db.session.add(Answer(
+                attempt_id=attempt.id, question_id=q.id,
+                answer_text=(q.starter_code or "") if q.question_type == "code" else "",
+            ))
+        record_event(attempt, "exam_started", "Student started the exam")
         db.session.commit()
     return redirect(url_for("student.take_exam", attempt_id=attempt.id))
 
@@ -511,7 +861,11 @@ def take_exam(attempt_id):
         rnd = random.Random(attempt.id)
         rnd.shuffle(questions)
     answers = {a.question_id: a for a in attempt.answers}
-    return render_template("student/exam.html", attempt=attempt, questions=questions, answers=answers, remaining_seconds=remaining_seconds(attempt))
+    monitoring_active = effective_monitoring(attempt.exam, current_user.id)
+    return render_template(
+        "student/exam.html", attempt=attempt, questions=questions, answers=answers,
+        remaining_seconds=remaining_seconds(attempt), monitoring_active=monitoring_active,
+    )
 
 
 @student_bp.route("/attempts/<int:attempt_id>/save", methods=["POST"])
@@ -529,6 +883,7 @@ def save_answer(attempt_id):
         abort(400)
     answer = get_or_make_answer(attempt, question)
     answer.answer_text = str(data.get("answer", ""))[:100000]
+    record_event(attempt, "answer_saved", f"Question {question.position}", emit=True)
     db.session.commit()
     return jsonify({"ok": True, "saved_at": utcnow().isoformat()})
 
@@ -539,8 +894,12 @@ def compile_code(attempt_id):
     attempt, question, code = _execution_request(attempt_id)
     if not question.allow_compile:
         return jsonify({"ok": False, "error": "Compilation is disabled for this question."}), 403
+    record_event(attempt, "compile_requested", f"Question {question.position}")
+    db.session.commit()
     ok, message, temp_dir = compile_cpp(code)
     try:
+        record_event(attempt, "compile_result", f"Question {question.position}: {'success' if ok else 'failed'}")
+        db.session.commit()
         if ok:
             return jsonify({"ok": True, "message": "Compilation successful."})
         return jsonify({"ok": False, "error": message if question.show_compile_errors else "Compilation failed."})
@@ -557,7 +916,11 @@ def run_code(attempt_id):
     if not question.allow_run:
         return jsonify({"ok": False, "error": "Running code is disabled for this question."}), 403
     data = request.get_json(silent=True) or {}
+    record_event(attempt, "run_requested", f"Question {question.position}")
+    db.session.commit()
     result = run_cpp(code, str(data.get("stdin", ""))[:20000])
+    record_event(attempt, "run_result", f"Question {question.position}: {'success' if result.ok else 'failed'}")
+    db.session.commit()
     payload = {"ok": result.ok, "stdout": result.stdout}
     if result.stderr and question.show_compile_errors:
         payload["stderr"] = result.stderr
@@ -583,25 +946,27 @@ def monitor_event(attempt_id):
     attempt = db.get_or_404(Attempt, attempt_id)
     if attempt.user_id != current_user.id or attempt.status != "in_progress":
         abort(403)
-    if not attempt.exam.monitoring_enabled:
-        return jsonify({"ok": True, "ignored": True})
     data = request.get_json(silent=True) or {}
     event_type = str(data.get("type", "unknown"))[:80]
     details = str(data.get("details", ""))[:500]
-    event = MonitorEvent(attempt_id=attempt.id, event_type=event_type, details=details)
-    db.session.add(event)
-    if event_type in {"tab_hidden", "window_blur", "fullscreen_exit", "copy_attempt", "paste_attempt", "context_menu", "page_leave"}:
-        attempt.violations += 1
+
+    # Browser integrity events obey the instructor's per-student ON/OFF switch.
+    # Non-violation acknowledgements are still useful in the activity timeline.
+    active = effective_monitoring(attempt.exam, attempt.user_id)
+    if event_type in VIOLATION_TYPES and not active:
+        return jsonify({"ok": True, "ignored": True, "monitoring": False, "violations": attempt.violations})
+
+    violation = event_type in VIOLATION_TYPES
+    record_event(attempt, event_type, details, violation=violation)
     db.session.commit()
-    socketio.emit("monitor_event", {
-        "student": attempt.user.name,
-        "student_id": attempt.user.student_id,
-        "type": event_type,
-        "details": details,
+    return jsonify({
+        "ok": True,
+        "monitoring": active,
+        "violation": violation,
         "violations": attempt.violations,
-        "time": event.created_at.isoformat(),
-    }, room="admins")
-    return jsonify({"ok": True, "violations": attempt.violations})
+        "warning": violation,
+        "message": "You left or interacted outside the permitted exam environment. This event has been recorded and reported to your instructor." if violation else "",
+    })
 
 
 @student_bp.route("/attempts/<int:attempt_id>/submit", methods=["POST"])
@@ -624,11 +989,26 @@ def result(attempt_id):
         abort(403)
     if attempt.status != "submitted":
         return redirect(url_for("student.take_exam", attempt_id=attempt.id))
-    total_points = sum(q.points for q in attempt.exam.questions)
-    return render_template("student/result.html", attempt=attempt, total_points=total_points)
+    settings = get_portal_settings()
+    released = results_released(attempt.exam)
+    stats = exam_class_stats(attempt.exam, attempt) if released and settings.show_class_comparison else None
+    letter, gp = grade_band(attempt_percent(attempt))
+    return render_template(
+        "student/result.html", attempt=attempt, total_points=total_points(attempt.exam),
+        released=released, settings=settings, stats=stats, percent=attempt_percent(attempt),
+        letter=letter, grade_points=gp,
+    )
 
+
+# -----------------------------------------------------------------------------
+# Socket rooms
+# -----------------------------------------------------------------------------
 
 @socketio.on("connect")
 def socket_connect():
-    if current_user.is_authenticated and current_user.role == "admin":
+    if not current_user.is_authenticated:
+        return
+    if current_user.role == "admin":
         join_room("admins")
+    elif current_user.role == "student":
+        join_room(f"user:{current_user.id}")

@@ -387,3 +387,9 @@ student C++ locally with time/resource limits. This is acceptable for controlled
 prototype testing, but it is **not equivalent to a hardened multi-tenant code sandbox**.
 For a real high-stakes deployment, move code execution into a dedicated isolated judge
 service/container before allowing untrusted students to run arbitrary programs.
+
+---
+
+## Phase 1 upgrade
+
+If this project is already deployed on Render, read `UPGRADE_PHASE1.md`. The Phase 1 package is intentionally backward-compatible with the existing PostgreSQL deployment and adds extension tables automatically at startup, so you do not need to create a new Render service or database.
