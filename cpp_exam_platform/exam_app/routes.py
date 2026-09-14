@@ -51,8 +51,18 @@ def student_must_change_password(user_id):
 
 
 def set_temporary_password(user, password):
-    """Assign a temporary password and force a change before student access."""
+    """Assign a temporary password and force a change before student access.
+
+    Set the password hash *before* the first INSERT.  User.password_hash is
+    NOT NULL, so flushing a newly-created User before hashing the temporary
+    password causes a database IntegrityError on PostgreSQL.
+    """
     user.set_password(password)
+    if user.id is None:
+        # The caller has already added the User to the session.  Flushing now
+        # is safe because password_hash has been populated, and gives us the
+        # user id needed by StudentPasswordState.
+        db.session.flush()
     state = db.session.get(StudentPasswordState, user.id)
     if state is None:
         state = StudentPasswordState(user_id=user.id)
@@ -587,7 +597,6 @@ def students():
         else:
             user = User(name=name, email=email, student_id=student_id, role="student")
             db.session.add(user)
-            db.session.flush()
             set_temporary_password(user, password)
             db.session.commit()
             flash("Student account created. They must change the temporary password at first login.", "success")
@@ -653,7 +662,6 @@ def import_students():
             continue
         u = User(name=name, email=email, student_id=sid, role="student")
         db.session.add(u)
-        db.session.flush()
         set_temporary_password(u, password)
         added += 1
     db.session.commit()
@@ -761,7 +769,6 @@ def import_canvas_students():
             active=True,
         )
         db.session.add(user)
-        db.session.flush()
         set_temporary_password(user, password)
         db.session.add(StudentProfile(
             user_id=user.id,
