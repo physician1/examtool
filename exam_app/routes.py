@@ -597,6 +597,42 @@ def students():
     return render_template("admin/students.html", students=items, password_states=states)
 
 
+@admin_bp.route("/students/set-general-password", methods=["POST"])
+@admin_required
+def set_general_student_password():
+    """Reset every student to one temporary course password.
+
+    The plaintext password is never persisted. Each User receives its own
+    one-way hash and StudentPasswordState forces an immediate private-password
+    change before any student dashboard, grade, or exam route is accessible.
+    """
+    password = request.form.get("general_password", "").strip()
+    confirm_password = request.form.get("confirm_general_password", "").strip()
+
+    if len(password) < 10:
+        flash("The general temporary password must be at least 10 characters.", "danger")
+        return redirect(url_for("admin.students"))
+    if password != confirm_password:
+        flash("The two temporary-password entries do not match.", "danger")
+        return redirect(url_for("admin.students"))
+
+    students = User.query.filter_by(role="student").all()
+    if not students:
+        flash("There are no student accounts to update.", "warning")
+        return redirect(url_for("admin.students"))
+
+    for student in students:
+        set_temporary_password(student, password)
+
+    db.session.commit()
+    flash(
+        f"General temporary password applied to {len(students)} student account(s). "
+        "Each student must create a private password at their next login.",
+        "success",
+    )
+    return redirect(url_for("admin.students"))
+
+
 @admin_bp.route("/students/import", methods=["POST"])
 @admin_required
 def import_students():
