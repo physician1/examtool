@@ -21,7 +21,7 @@ from .extensions import db, socketio
 from .models import (
     User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
     PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
-    AttemptComment, StudentProfile, ExamException,
+    AttemptComment, StudentProfile, ExamException, DashboardActivityState,
 )
 from .grader import compile_cpp, run_cpp, grade_code
 
@@ -485,11 +485,28 @@ def dashboard():
     students = User.query.filter_by(role="student").count()
     active_attempts = Attempt.query.filter_by(status="in_progress").count()
     submitted = Attempt.query.filter_by(status="submitted").count()
-    recent_events = MonitorEvent.query.order_by(MonitorEvent.created_at.desc()).limit(10).all()
+    activity_state = db.session.get(DashboardActivityState, current_user.id)
+    events_query = MonitorEvent.query
+    if activity_state and activity_state.cleared_before:
+        events_query = events_query.filter(MonitorEvent.created_at > activity_state.cleared_before)
+    recent_events = events_query.order_by(MonitorEvent.created_at.desc()).limit(10).all()
     return render_template(
         "admin/dashboard.html", exams=exams, students=students,
         active_attempts=active_attempts, submitted=submitted, recent_events=recent_events,
     )
+
+
+@admin_bp.route("/dashboard/activity/clear", methods=["POST"])
+@admin_required
+def clear_dashboard_activity():
+    state = db.session.get(DashboardActivityState, current_user.id)
+    if state is None:
+        state = DashboardActivityState(admin_user_id=current_user.id)
+        db.session.add(state)
+    state.cleared_before = utcnow()
+    db.session.commit()
+    flash("Recent dashboard activity cleared. Monitoring and audit records were preserved.", "success")
+    return redirect(url_for("admin.dashboard"))
 
 
 @admin_bp.route("/students", methods=["GET", "POST"])

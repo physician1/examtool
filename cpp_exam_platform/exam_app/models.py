@@ -208,3 +208,16 @@ class ExamException(db.Model):
     user = db.relationship("User")
 
     __table_args__ = (db.UniqueConstraint("exam_id", "user_id", name="uq_exam_exception"),)
+
+
+class DashboardActivityState(db.Model):
+    """Per-admin dashboard feed state.
+
+    Clearing recent activity only hides older events from the overview feed.
+    The underlying monitoring/audit records remain intact for exam review.
+    """
+    admin_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
+    cleared_before = db.Column(db.DateTime(timezone=True), nullable=True)
+    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    admin = db.relationship("User")
