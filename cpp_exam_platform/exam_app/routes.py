@@ -22,6 +22,7 @@ from .models import (
     User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
     PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
     AttemptComment, StudentProfile, ExamException, DashboardActivityState,
+    StudentPasswordState,
 )
 from .grader import compile_cpp, run_cpp, grade_code
 
@@ -44,6 +45,24 @@ GRADE_SCALE = [
 ]
 
 
+def student_must_change_password(user_id):
+    state = db.session.get(StudentPasswordState, user_id)
+    return bool(state and state.must_change_password)
+
+
+def set_temporary_password(user, password):
+    """Assign a temporary password and force a change before student access."""
+    user.set_password(password)
+    state = db.session.get(StudentPasswordState, user.id)
+    if state is None:
+        state = StudentPasswordState(user_id=user.id)
+        db.session.add(state)
+    state.must_change_password = True
+    state.assigned_at = utcnow()
+    state.changed_at = None
+    return state
+
+
 def admin_required(fn):
     @wraps(fn)
     @login_required
@@ -60,6 +79,8 @@ def student_required(fn):
     def wrapper(*args, **kwargs):
         if current_user.role != "student":
             abort(403)
+        if student_must_change_password(current_user.id):
+            return redirect(url_for("auth.change_password"))
         return fn(*args, **kwargs)
     return wrapper
 
@@ -447,6 +468,8 @@ def healthz():
 @main_bp.route("/")
 def index():
     if current_user.is_authenticated:
+        if current_user.role == "student" and student_must_change_password(current_user.id):
+            return redirect(url_for("auth.change_password"))
         return redirect(url_for("admin.dashboard" if current_user.role == "admin" else "student.dashboard"))
     return redirect(url_for("auth.login"))
 
@@ -461,9 +484,47 @@ def login():
         user = User.query.filter((User.email.ilike(identifier)) | (User.student_id == identifier)).first()
         if user and user.check_password(password) and user.active:
             login_user(user)
+            if user.role == "student" and student_must_change_password(user.id):
+                return redirect(url_for("auth.change_password"))
             return redirect(url_for("main.index"))
         flash("Invalid login details.", "danger")
     return render_template("login.html")
+
+
+@auth_bp.route("/change-password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    if current_user.role != "student":
+        return redirect(url_for("main.index"))
+
+    state = db.session.get(StudentPasswordState, current_user.id)
+    forced = bool(state and state.must_change_password)
+
+    if request.method == "POST":
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if not current_user.check_password(current_password):
+            flash("Your current temporary password is incorrect.", "danger")
+        elif len(new_password) < 10:
+            flash("Your new password must be at least 10 characters.", "danger")
+        elif new_password != confirm_password:
+            flash("The new passwords do not match.", "danger")
+        elif current_user.check_password(new_password):
+            flash("Choose a new password that is different from the temporary password.", "danger")
+        else:
+            current_user.set_password(new_password)
+            if state is None:
+                state = StudentPasswordState(user_id=current_user.id, must_change_password=False)
+                db.session.add(state)
+            state.must_change_password = False
+            state.changed_at = utcnow()
+            db.session.commit()
+            flash("Password changed successfully. Welcome to BeaconCode.", "success")
+            return redirect(url_for("student.dashboard"))
+
+    return render_template("change_password.html", forced=forced)
 
 
 @auth_bp.route("/logout", methods=["POST"])
@@ -519,17 +580,57 @@ def students():
         password = request.form.get("password", "").strip()
         if not all([name, email, student_id, password]):
             flash("All student fields are required.", "danger")
+        elif len(password) < 10:
+            flash("Temporary password must be at least 10 characters.", "danger")
         elif User.query.filter((User.email == email) | (User.student_id == student_id)).first():
             flash("Email or student ID already exists.", "danger")
         else:
             user = User(name=name, email=email, student_id=student_id, role="student")
-            user.set_password(password)
             db.session.add(user)
+            db.session.flush()
+            set_temporary_password(user, password)
             db.session.commit()
-            flash("Student account created.", "success")
+            flash("Student account created. They must change the temporary password at first login.", "success")
         return redirect(url_for("admin.students"))
     items = User.query.filter_by(role="student").order_by(User.name).all()
-    return render_template("admin/students.html", students=items)
+    states = {s.user_id: s for s in StudentPasswordState.query.all()}
+    return render_template("admin/students.html", students=items, password_states=states)
+
+
+@admin_bp.route("/students/set-general-password", methods=["POST"])
+@admin_required
+def set_general_student_password():
+    """Reset every student to one temporary course password.
+
+    The plaintext password is never persisted. Each User receives its own
+    one-way hash and StudentPasswordState forces an immediate private-password
+    change before any student dashboard, grade, or exam route is accessible.
+    """
+    password = request.form.get("general_password", "").strip()
+    confirm_password = request.form.get("confirm_general_password", "").strip()
+
+    if len(password) < 10:
+        flash("The general temporary password must be at least 10 characters.", "danger")
+        return redirect(url_for("admin.students"))
+    if password != confirm_password:
+        flash("The two temporary-password entries do not match.", "danger")
+        return redirect(url_for("admin.students"))
+
+    students = User.query.filter_by(role="student").all()
+    if not students:
+        flash("There are no student accounts to update.", "warning")
+        return redirect(url_for("admin.students"))
+
+    for student in students:
+        set_temporary_password(student, password)
+
+    db.session.commit()
+    flash(
+        f"General temporary password applied to {len(students)} student account(s). "
+        "Each student must create a private password at their next login.",
+        "success",
+    )
+    return redirect(url_for("admin.students"))
 
 
 @admin_bp.route("/students/import", methods=["POST"])
@@ -551,8 +652,9 @@ def import_students():
             skipped += 1
             continue
         u = User(name=name, email=email, student_id=sid, role="student")
-        u.set_password(password)
         db.session.add(u)
+        db.session.flush()
+        set_temporary_password(u, password)
         added += 1
     db.session.commit()
     flash(f"Imported {added} student(s); skipped {skipped}.", "success")
@@ -563,7 +665,13 @@ def import_students():
 @admin_required
 def import_canvas_students():
     if request.method == "GET":
-        return render_template("admin/canvas_import.html", report=None, credentials=[])
+        return render_template("admin/canvas_import.html", report=None, credentials=[], shared_password="")
+
+    shared_password = request.form.get("temporary_password", "").strip()
+    reset_existing = request.form.get("reset_existing") == "on"
+    if len(shared_password) < 10:
+        flash("Choose a shared temporary password with at least 10 characters.", "danger")
+        return redirect(url_for("admin.import_canvas_students"))
 
     uploaded = request.files.get("csv_file")
     if not uploaded or not uploaded.filename:
@@ -586,6 +694,7 @@ def import_canvas_students():
     credentials = []
     created = 0
     existing_count = 0
+    reset_count = 0
     skipped = 0
     sections = set()
     errors = []
@@ -623,6 +732,17 @@ def import_canvas_students():
             profile.sis_login_id = data["sis_login_id"] or profile.sis_login_id
             profile.section = data["section"] or profile.section
             profile.source = "canvas"
+            if reset_existing:
+                set_temporary_password(existing, shared_password)
+                credentials.append({
+                    "name": existing.name,
+                    "student_id": existing.student_id,
+                    "login": existing.student_id,
+                    "email": "" if existing.email.endswith("@beaconcode.local") else existing.email,
+                    "password": shared_password,
+                    "section": data["section"],
+                })
+                reset_count += 1
             existing_count += 1
             continue
 
@@ -632,7 +752,7 @@ def import_canvas_students():
         if User.query.filter(User.email.ilike(email)).first():
             email = _placeholder_email(f"{data['student_id']}-{secrets.token_hex(2)}", data["canvas_user_id"])
 
-        password = _temporary_password()
+        password = shared_password
         user = User(
             name=data["name"][:120],
             email=email,
@@ -640,9 +760,9 @@ def import_canvas_students():
             role="student",
             active=True,
         )
-        user.set_password(password)
         db.session.add(user)
         db.session.flush()
+        set_temporary_password(user, password)
         db.session.add(StudentProfile(
             user_id=user.id,
             canvas_user_id=data["canvas_user_id"] or None,
@@ -665,12 +785,13 @@ def import_canvas_students():
     report = {
         "created": created,
         "existing": existing_count,
+        "reset": reset_count,
         "skipped": skipped,
         "sections": sorted(sections),
         "headers": reader.fieldnames or [],
         "errors": errors[:20],
     }
-    return render_template("admin/canvas_import.html", report=report, credentials=credentials)
+    return render_template("admin/canvas_import.html", report=report, credentials=credentials, shared_password=shared_password)
 
 
 @admin_bp.route("/grades")
@@ -757,6 +878,7 @@ def delete_student(user_id):
     MonitoringOverride.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     ExamException.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     StudentProfile.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    StudentPasswordState.query.filter_by(user_id=user.id).delete(synchronize_session=False)
 
     # Deleting each Attempt via the ORM triggers the existing cascades for
     # answers, monitoring events, and the attempt comment record.

@@ -221,3 +221,19 @@ class DashboardActivityState(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     admin = db.relationship("User")
+
+
+class StudentPasswordState(db.Model):
+    """Tracks whether a student must replace a temporary password.
+
+    Stored separately from User so existing hosted databases can upgrade with
+    db.create_all() and no destructive ALTER TABLE migration. The temporary
+    password itself is never stored here; only User.password_hash contains a
+    one-way hash.
+    """
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
+    must_change_password = db.Column(db.Boolean, nullable=False, default=True)
+    assigned_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    user = db.relationship("User", backref=db.backref("password_state", uselist=False))

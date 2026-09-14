@@ -21,11 +21,13 @@
     <form method="post" enctype="multipart/form-data" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Canvas CSV file<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+      <label>Shared temporary password<input type="password" name="temporary_password" minlength="10" required placeholder="Example: CS310-Fall-2026!"><small>Every imported student receives this password initially and must change it immediately after signing in.</small></label>
+      <label class="check-row"><input type="checkbox" name="reset_existing" checked> <span>Also reset matching existing students to this temporary password</span></label>
       <button class="btn btn-primary">Import Canvas roster</button>
     </form>
     <div class="info-box">
-      <strong>How accounts are created</strong>
-      <p>BeaconCode uses the SIS User ID when available, otherwise Canvas ID/login ID. New students receive a random temporary password. Existing students are recognized and not duplicated.</p>
+      <strong>First-login password change is enforced</strong>
+      <p>Students sign in with their Student/SIS ID and the shared temporary password. Before they can see the dashboard, grades, or exams, BeaconCode requires them to create a private password. The shared password is stored only as a one-way hash and cannot be viewed later.</p>
     </div>
   </section>
 
@@ -34,16 +36,16 @@
       <div class="card-head"><h2>Import complete</h2><span class="pill pill-green">{{ report.created }} created</span></div>
       <div class="import-stats">
         <div><strong>{{ report.created }}</strong><span>New accounts</span></div>
-        <div><strong>{{ report.existing }}</strong><span>Already existed</span></div>
+        <div><strong>{{ report.existing }}</strong><span>Matched existing</span></div>
+        <div><strong>{{ report.reset }}</strong><span>Passwords reset</span></div>
         <div><strong>{{ report.skipped }}</strong><span>Skipped rows</span></div>
-        <div><strong>{{ report.sections|length }}</strong><span>Sections found</span></div>
       </div>
       {% if report.sections %}<p class="muted"><strong>Sections:</strong> {{ report.sections|join(', ') }}</p>{% endif %}
       {% if report.errors %}<div class="alert alert-warning">{% for e in report.errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
 
       {% if credentials %}
       <div class="credential-head">
-        <div><h3>New student credentials</h3><p class="muted">Download this now and store it securely. Passwords are not shown again later.</p></div>
+        <div><h3>Student login instructions</h3><p class="muted">These students can sign in with their Student ID and the shared temporary password below. They will be forced to create a private password immediately.</p></div>
         <button type="button" class="btn btn-secondary" id="downloadCredentials">Download credentials CSV</button>
       </div>
       <div class="table-wrap credential-table"><table><thead><tr><th>Name</th><th>Student ID / Login</th><th>Section</th><th>Temporary password</th></tr></thead><tbody>

@@ -81,7 +81,7 @@ def test_canvas_csv_import_creates_student_and_profile(client, app):
     )
     r = client.post(
         '/admin/students/import-canvas',
-        data={'csv_file': (io.BytesIO(data.encode('utf-8')), 'gradebook.csv')},
+        data={'csv_file': (io.BytesIO(data.encode('utf-8')), 'gradebook.csv'), 'temporary_password': 'SharedPass2026!', 'reset_existing': 'on'},
         content_type='multipart/form-data',
     )
     assert r.status_code == 200
@@ -201,3 +201,47 @@ def test_admin_can_reopen_submitted_attempt_with_exception(client, app):
         assert attempt.score == 0.0
         assert answer.answer_text == '1'  # student's work is preserved
         assert answer.score == 0.0
+
+
+def test_canvas_student_must_change_shared_temp_password_before_dashboard(client, app):
+    from exam_app.models import StudentPasswordState
+    login(client, 'teacher@example.edu')
+    data = (
+        'Student,ID,SIS User ID,SIS Login ID,Section\n'
+        'First Login Student,888,UMB0100,first.login@umb.edu,CS110-01\n'
+    )
+    r = client.post(
+        '/admin/students/import-canvas',
+        data={
+            'csv_file': (io.BytesIO(data.encode('utf-8')), 'roster.csv'),
+            'temporary_password': 'SharedPass2026!',
+            'reset_existing': 'on',
+        },
+        content_type='multipart/form-data',
+    )
+    assert r.status_code == 200
+    client.post('/logout', follow_redirects=True)
+
+    r = client.post('/login', data={'identifier': 'UMB0100', 'password': 'SharedPass2026!'}, follow_redirects=True)
+    assert r.status_code == 200
+    assert b'Create your private password' in r.data
+
+    # Student cannot bypass the change screen by navigating directly.
+    r = client.get('/student/', follow_redirects=True)
+    assert b'Create your private password' in r.data
+
+    r = client.post('/change-password', data={
+        'current_password': 'SharedPass2026!',
+        'new_password': 'MyPrivatePass2026!',
+        'confirm_password': 'MyPrivatePass2026!',
+    }, follow_redirects=True)
+    assert r.status_code == 200
+    assert b'Welcome' in r.data
+
+    with app.app_context():
+        user = User.query.filter_by(student_id='UMB0100').first()
+        state = db.session.get(StudentPasswordState, user.id)
+        assert state is not None
+        assert state.must_change_password is False
+        assert user.check_password('MyPrivatePass2026!')
+        assert not user.check_password('SharedPass2026!')
