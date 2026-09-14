@@ -1,16 +1,80 @@
-{% extends 'base.html' %}{% block title %}My Grades & Performance{% endblock %}
-{% block content %}<div class="student-wrap">
-<div class="page-head student-page-head"><div><span class="eyebrow">MY PERFORMANCE</span><h1>Grades & progress</h1><p>Released assessment results and anonymous class comparisons.</p></div><a class="btn btn-secondary" href="{{ url_for('student.dashboard') }}">← Dashboard</a></div>
+{% extends 'base.html' %}
+{% block title %}Grades{% endblock %}
+{% block content %}
+<div class="student-wrap">
+  <div class="page-head student-page-head">
+    <div><span class="eyebrow">GRADEBOOK</span><h1>Grades</h1><p>Your released test results, current course grade, feedback, and class comparison.</p></div>
+    <a class="btn btn-secondary" href="{{ url_for('student.dashboard') }}">← Dashboard</a>
+  </div>
 
-{% if settings.show_current_grade and summaries %}
-<div class="performance-strip">{% for s in summaries %}<article class="performance-card"><span class="course-chip">{{ s.course_code }}</span><div class="performance-main"><strong>{{ s.percent }}%</strong><span>Current course grade</span></div><div class="performance-meta">{% if settings.show_letter_grade %}<span><b>{{ s.letter }}</b> Letter</span>{% endif %}{% if settings.show_grade_points %}<span><b>{{ '%.1f'|format(s.grade_points) }}</b> Grade-point eq.</span>{% endif %}{% if settings.show_class_comparison and s.class_average is not none %}<span><b>{{ s.class_average }}%</b> Class avg.</span>{% endif %}{% if settings.show_percentile and s.percentile %}<span><b>{{ s.percentile }}th</b> Percentile</span>{% endif %}</div><small class="muted">Assessment-based estimate from released work; not an official university GPA.</small></article>{% endfor %}</div>
-{% endif %}
+  {% if settings.show_current_grade and summaries %}
+  <div class="performance-strip">
+    {% for s in summaries %}
+    <article class="performance-card primary-performance">
+      <span class="course-chip">{{ s.course_code }}</span>
+      <div class="performance-main"><strong>{{ s.percent }}%</strong><span>Current grade from released work</span></div>
+      <div class="performance-meta">
+        {% if settings.show_letter_grade %}<span><b>{{ s.letter }}</b> Letter grade</span>{% endif %}
+        {% if settings.show_grade_points %}<span><b>{{ '%.1f'|format(s.grade_points) }}</b> Grade-point eq.</span>{% endif %}
+        {% if settings.show_class_comparison and s.class_average is not none %}<span><b>{{ s.class_average }}%</b> Class average</span>{% endif %}
+        {% if settings.show_percentile and s.percentile %}<span><b>{{ s.percentile }}th</b> Percentile</span>{% endif %}
+        <span><b>{{ s.completed }}</b> Tests graded</span>
+      </div>
+      <small class="muted">Based only on released BeaconCode assessments. Grade-point equivalent is informational, not an official university GPA.</small>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
 
-{% if performance %}
-<section class="card portal-section"><div class="card-head"><div><h2>Performance trend</h2><p>Your score compared with the class average</p></div></div><div class="trend-list">{% for row in performance %}<div class="trend-row"><div class="trend-label"><strong>{{ row.attempt.exam.title }}</strong><small>{{ row.attempt.submitted_at.strftime('%b %d, %Y') if row.attempt.submitted_at else '' }}</small></div><div class="trend-bars"><div><span>Your score</span><div class="bar-track"><i style="width:{{ row.percent }}%"></i></div><b>{{ row.percent }}%</b></div>{% if settings.show_class_comparison and row.class_average is not none %}<div class="class-bar"><span>Class avg.</span><div class="bar-track"><i style="width:{{ row.class_average }}%"></i></div><b>{{ row.class_average }}%</b></div>{% endif %}</div></div>{% endfor %}</div></section>
-{% endif %}
+  {% if settings.show_past_results %}
+  <section class="card portal-section">
+    <div class="card-head"><div><h2>All tests</h2><p>Your course assessment record</p></div></div>
+    <div class="table-wrap"><table class="student-grade-table">
+      <thead><tr><th>Assessment</th><th>Submitted</th><th>Points</th><th>Percent</th><th>Class avg.</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      {% for a in attempts %}
+        <tr>
+          <td><strong>{{ a.exam.title }}</strong><br><small>{{ a.exam.course_code }}</small></td>
+          <td>{{ a.submitted_at.strftime('%b %d, %Y') if a.submitted_at else '—' }}</td>
+          {% if results_released(a.exam) %}
+            <td><strong>{{ '%g'|format(a.score) }}/{{ '%g'|format(a.exam.questions|sum(attribute='points')) }}</strong></td>
+            <td><strong>{{ attempt_percent(a) }}%</strong></td>
+            <td>
+              {% if settings.show_class_comparison %}
+                {% set ns = namespace(avg='—') %}
+                {% for row in performance %}{% if row.attempt.id == a.id and row.class_average is not none %}{% set ns.avg = row.class_average ~ '%' %}{% endif %}{% endfor %}
+                {{ ns.avg }}
+              {% else %}—{% endif %}
+            </td>
+            <td><span class="pill pill-green">Released</span></td>
+            <td><a class="btn btn-ghost btn-sm" href="{{ url_for('student.result', attempt_id=a.id) }}">View result</a></td>
+          {% else %}
+            <td>—</td><td>—</td><td>—</td><td><span class="pill">Awaiting release</span></td><td><a href="{{ url_for('student.result', attempt_id=a.id) }}">View status</a></td>
+          {% endif %}
+        </tr>
+      {% else %}
+        <tr><td colspan="7"><div class="empty">No submitted assessments yet.</div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endif %}
 
-{% if settings.show_past_results %}
-<section class="card portal-section"><div class="card-head"><div><h2>Past tests</h2><p>Submitted assessments and release status</p></div></div><div class="table-wrap"><table><thead><tr><th>Assessment</th><th>Submitted</th><th>Status</th><th>Result</th><th></th></tr></thead><tbody>{% for a in attempts %}<tr><td><strong>{{ a.exam.title }}</strong><br><small>{{ a.exam.course_code }}</small></td><td>{{ a.submitted_at.strftime('%b %d, %Y') if a.submitted_at else '—' }}</td><td><span class="pill {{ 'pill-green' if results_released(a.exam) else '' }}">{{ 'Released' if results_released(a.exam) else 'Awaiting release' }}</span></td><td>{% if results_released(a.exam) %}<strong>{{ attempt_percent(a) }}%</strong>{% else %}—{% endif %}</td><td><a href="{{ url_for('student.result', attempt_id=a.id) }}">View →</a></td></tr>{% else %}<tr><td colspan="5"><div class="empty">No submitted assessments yet.</div></td></tr>{% endfor %}</tbody></table></div></section>
-{% endif %}
-</div>{% endblock %}
+  {% if performance %}
+  <section class="card portal-section">
+    <div class="card-head"><div><h2>Performance trend</h2><p>Your released scores over time{% if settings.show_class_comparison %}, compared anonymously with the class{% endif %}</p></div></div>
+    <div class="trend-list">
+      {% for row in performance %}
+      <div class="trend-row">
+        <div class="trend-label"><strong>{{ row.attempt.exam.title }}</strong><small>{{ row.attempt.submitted_at.strftime('%b %d, %Y') if row.attempt.submitted_at else '' }}</small></div>
+        <div class="trend-bars">
+          <div><span>Your score</span><div class="bar-track"><i style="width:{{ row.percent }}%"></i></div><b>{{ row.percent }}%</b></div>
+          {% if settings.show_class_comparison and row.class_average is not none %}<div class="class-bar"><span>Class avg.</span><div class="bar-track"><i style="width:{{ row.class_average }}%"></i></div><b>{{ row.class_average }}%</b></div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block title %}Import Canvas Roster{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">CANVAS ROSTER</span>
+    <h1>Import students from Canvas</h1>
+    <p>Upload a Canvas roster or Gradebook CSV once. BeaconCode ignores assignment columns and creates student accounts from the roster fields.</p>
+  </div>
+  <a class="btn btn-secondary" href="{{ url_for('admin.students') }}">← Students</a>
+</div>
+
+<div class="two-col uneven canvas-import-grid">
+  <section class="card import-card">
+    <h2>1. Export from Canvas</h2>
+    <p class="muted">Canvas Gradebook CSV files usually contain <strong>Student</strong>, <strong>ID</strong>, <strong>SIS User ID</strong>, <strong>SIS Login ID</strong>, and <strong>Section</strong>. Extra assignment columns are safe to leave in the file.</p>
+    <div class="import-example">
+      <span>Student</span><span>ID</span><span>SIS User ID</span><span>SIS Login ID</span><span>Section</span>
+    </div>
+    <h2>2. Upload CSV</h2>
+    <form method="post" enctype="multipart/form-data" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Canvas CSV file<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+      <button class="btn btn-primary">Import Canvas roster</button>
+    </form>
+    <div class="info-box">
+      <strong>How accounts are created</strong>
+      <p>BeaconCode uses the SIS User ID when available, otherwise Canvas ID/login ID. New students receive a random temporary password. Existing students are recognized and not duplicated.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    {% if report %}
+      <div class="card-head"><h2>Import complete</h2><span class="pill pill-green">{{ report.created }} created</span></div>
+      <div class="import-stats">
+        <div><strong>{{ report.created }}</strong><span>New accounts</span></div>
+        <div><strong>{{ report.existing }}</strong><span>Already existed</span></div>
+        <div><strong>{{ report.skipped }}</strong><span>Skipped rows</span></div>
+        <div><strong>{{ report.sections|length }}</strong><span>Sections found</span></div>
+      </div>
+      {% if report.sections %}<p class="muted"><strong>Sections:</strong> {{ report.sections|join(', ') }}</p>{% endif %}
+      {% if report.errors %}<div class="alert alert-warning">{% for e in report.errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+
+      {% if credentials %}
+      <div class="credential-head">
+        <div><h3>New student credentials</h3><p class="muted">Download this now and store it securely. Passwords are not shown again later.</p></div>
+        <button type="button" class="btn btn-secondary" id="downloadCredentials">Download credentials CSV</button>
+      </div>
+      <div class="table-wrap credential-table"><table><thead><tr><th>Name</th><th>Student ID / Login</th><th>Section</th><th>Temporary password</th></tr></thead><tbody>
+      {% for c in credentials %}<tr><td>{{ c.name }}</td><td>{{ c.login }}</td><td>{{ c.section or '—' }}</td><td><code>{{ c.password }}</code></td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<div class="empty">No new accounts were created; matching students were left intact.</div>{% endif %}
+    {% else %}
+      <div class="empty tall-empty"><strong>No file imported yet</strong><span>Your import summary and new-account credentials will appear here.</span></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if credentials %}
+<script>
+const credentials = {{ credentials|tojson }};
+document.getElementById('downloadCredentials')?.addEventListener('click', () => {
+  const esc = (v) => '"' + String(v ?? '').replaceAll('"','""') + '"';
+  const rows = [['Name','Student ID','Login','Email','Section','Temporary Password']];
+  credentials.forEach(c => rows.push([c.name,c.student_id,c.login,c.email,c.section,c.password]));
+  const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'beaconcode_student_credentials.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 500);
+});
+</script>
+{% endif %}
+{% endblock %}

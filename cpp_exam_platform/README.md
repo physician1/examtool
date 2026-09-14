@@ -393,3 +393,17 @@ service/container before allowing untrusted students to run arbitrary programs.
 ## Phase 1 upgrade
 
 If this project is already deployed on Render, read `UPGRADE_PHASE1.md`. The Phase 1 package is intentionally backward-compatible with the existing PostgreSQL deployment and adds extension tables automatically at startup, so you do not need to create a new Render service or database.
+
+## Gradebook and Canvas roster import
+
+This build adds a course-wide **Grades** page for instructors and an expanded **Grades** page for students.
+
+### Instructor Gradebook
+
+Open **Grades** in the instructor sidebar. The matrix combines each student's submitted BeaconCode assessments into one row, includes per-test scores, completed-test counts, current percentage, letter grade, and grade-point equivalent, and can be exported to CSV. Work that has not been submitted is not silently counted as zero.
+
+### Canvas roster import
+
+Open **Students → Import from Canvas** and upload a Canvas Gradebook/roster CSV. BeaconCode recognizes common fields such as `Student`, `ID`, `SIS User ID`, `SIS Login ID`, and `Section`; assignment columns are ignored. New accounts receive random temporary passwords and the post-import screen can download a credentials CSV. Existing students are detected and not duplicated.
+
+Canvas metadata is stored in a separate `student_profile` table so an existing PostgreSQL deployment can be upgraded with the same database via `db.create_all()`.

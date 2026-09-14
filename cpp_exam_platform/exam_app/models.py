@@ -167,3 +167,21 @@ class AttemptComment(db.Model):
     attempt_id = db.Column(db.Integer, db.ForeignKey("attempt.id"), primary_key=True)
     comment = db.Column(db.Text, default="")
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class StudentProfile(db.Model):
+    """Optional roster metadata imported from Canvas or another LMS.
+
+    Kept in a separate table so upgrading an existing hosted BeaconCode database
+    only requires db.create_all(); no destructive alteration of the existing
+    user table is needed.
+    """
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
+    canvas_user_id = db.Column(db.String(80), nullable=True, index=True)
+    sis_user_id = db.Column(db.String(120), nullable=True, index=True)
+    sis_login_id = db.Column(db.String(255), nullable=True, index=True)
+    section = db.Column(db.String(255), nullable=True, index=True)
+    source = db.Column(db.String(40), nullable=False, default="manual")
+    imported_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user = db.relationship("User", backref=db.backref("student_profile", uselist=False))

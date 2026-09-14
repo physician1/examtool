@@ -3,6 +3,9 @@ import io
 import json
 import random
 import statistics
+import secrets
+import string
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from functools import wraps
@@ -18,7 +21,7 @@ from .extensions import db, socketio
 from .models import (
     User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
     PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
-    AttemptComment,
+    AttemptComment, StudentProfile,
 )
 from .grader import compile_cpp, run_cpp, grade_code
 
@@ -283,6 +286,130 @@ def performance_rows_for_user(user_id):
     return rows
 
 
+def _active_exam_list(course_code=None):
+    """Return non-archived exams for the course gradebook."""
+    archived_ids = {x.exam_id for x in ExamArchive.query.all()}
+    query = Exam.query.order_by(Exam.created_at.asc())
+    if course_code:
+        query = query.filter(Exam.course_code == course_code)
+    return [e for e in query.all() if e.id not in archived_ids]
+
+
+def build_admin_gradebook(course_code=None):
+    """Build a Canvas-style matrix of students x exams.
+
+    Current grade is points earned divided by points possible for submitted
+    attempts only. Work that has not yet been submitted is not silently treated
+    as a zero.
+    """
+    exams = _active_exam_list(course_code)
+    students = User.query.filter_by(role="student").order_by(User.name.asc()).all()
+    exam_ids = [e.id for e in exams]
+    user_ids = [u.id for u in students]
+    attempts = []
+    if exam_ids and user_ids:
+        attempts = (Attempt.query.filter(Attempt.exam_id.in_(exam_ids), Attempt.user_id.in_(user_ids))
+                    .order_by(Attempt.started_at.asc()).all())
+    amap = {(a.user_id, a.exam_id): a for a in attempts}
+    rows = []
+    for student in students:
+        earned = 0.0
+        possible = 0.0
+        completed = 0
+        cells = []
+        for exam in exams:
+            attempt = amap.get((student.id, exam.id))
+            exam_possible = total_points(exam)
+            cell = {
+                "exam": exam,
+                "attempt": attempt,
+                "possible": exam_possible,
+                "percent": None,
+                "score": None,
+                "status": "not_started",
+            }
+            if attempt:
+                cell["status"] = attempt.status
+                if attempt.status == "submitted":
+                    cell["score"] = attempt.score
+                    cell["percent"] = attempt_percent(attempt)
+                    earned += float(attempt.score or 0)
+                    possible += exam_possible
+                    completed += 1
+            cells.append(cell)
+        current_pct = round((earned / possible) * 100, 1) if possible else None
+        letter, gp = grade_band(current_pct or 0)
+        rows.append({
+            "student": student,
+            "profile": student.student_profile,
+            "cells": cells,
+            "earned": round(earned, 2),
+            "possible": round(possible, 2),
+            "percent": current_pct,
+            "letter": letter if current_pct is not None else "—",
+            "grade_points": gp if current_pct is not None else None,
+            "completed": completed,
+        })
+    return exams, rows
+
+
+def _norm_header(value):
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").strip().lower()).strip()
+
+
+def _row_lookup(row, *candidates):
+    normalized = {_norm_header(k): (v or "").strip() for k, v in (row or {}).items() if k is not None}
+    for candidate in candidates:
+        value = normalized.get(_norm_header(candidate), "")
+        if value:
+            return value
+    return ""
+
+
+def _temporary_password(length=14):
+    # Avoid ambiguous characters while still including upper/lower/digits/symbols.
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _placeholder_email(student_id, canvas_id=""):
+    token = re.sub(r"[^A-Za-z0-9._-]+", "-", (student_id or canvas_id or secrets.token_hex(4))).strip("-.")
+    token = token[:80] or secrets.token_hex(4)
+    return f"{token.lower()}@beaconcode.local"
+
+
+def _canvas_student_from_row(row):
+    """Extract the roster identity fields from common Canvas CSV exports.
+
+    Canvas gradebook/roster exports commonly include Student, ID, SIS User ID,
+    SIS Login ID and Section. Extra assignment columns are intentionally ignored.
+    """
+    name = _row_lookup(row, "Student", "Student Name", "Name", "Full Name")
+    lowered = name.casefold()
+    if not name or lowered in {"points possible", "student, test", "test student"} or lowered.startswith("points possible"):
+        return None
+
+    canvas_id = _row_lookup(row, "ID", "Canvas User ID", "Canvas ID")
+    sis_user_id = _row_lookup(row, "SIS User ID", "SIS ID", "Student ID", "Student Number")
+    sis_login_id = _row_lookup(row, "SIS Login ID", "Login ID", "Login", "Username")
+    explicit_email = _row_lookup(row, "Email", "Email Address", "University Email")
+    section = _row_lookup(row, "Section", "Sections", "Course Section")
+
+    student_id = sis_user_id or canvas_id or sis_login_id
+    if not student_id:
+        return None
+    email = explicit_email or (sis_login_id if "@" in sis_login_id else "")
+    return {
+        "name": name,
+        "student_id": student_id[:40],
+        "email": email.lower()[:255] if email else "",
+        "canvas_user_id": canvas_id[:80],
+        "sis_user_id": sis_user_id[:120],
+        "sis_login_id": sis_login_id[:255],
+        "section": section[:255],
+    }
+
+
 # -----------------------------------------------------------------------------
 # Main/auth
 # -----------------------------------------------------------------------------
@@ -388,6 +515,173 @@ def import_students():
     db.session.commit()
     flash(f"Imported {added} student(s); skipped {skipped}.", "success")
     return redirect(url_for("admin.students"))
+
+
+@admin_bp.route("/students/import-canvas", methods=["GET", "POST"])
+@admin_required
+def import_canvas_students():
+    if request.method == "GET":
+        return render_template("admin/canvas_import.html", report=None, credentials=[])
+
+    uploaded = request.files.get("csv_file")
+    if not uploaded or not uploaded.filename:
+        flash("Choose the Canvas CSV file first.", "danger")
+        return redirect(url_for("admin.import_canvas_students"))
+
+    try:
+        raw = uploaded.stream.read()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            raise ValueError("No CSV headers were found.")
+    except Exception as exc:
+        flash(f"Could not read that CSV file: {exc}", "danger")
+        return redirect(url_for("admin.import_canvas_students"))
+
+    credentials = []
+    created = 0
+    existing_count = 0
+    skipped = 0
+    sections = set()
+    errors = []
+
+    for line_no, raw_row in enumerate(reader, start=2):
+        data = _canvas_student_from_row(raw_row)
+        if not data:
+            skipped += 1
+            continue
+        if data["section"]:
+            sections.add(data["section"])
+
+        existing = User.query.filter_by(student_id=data["student_id"]).first()
+        if not existing and data["email"]:
+            existing = User.query.filter(User.email.ilike(data["email"])).first()
+        if not existing and (data["sis_user_id"] or data["sis_login_id"]):
+            profile = None
+            if data["sis_user_id"]:
+                profile = StudentProfile.query.filter_by(sis_user_id=data["sis_user_id"]).first()
+            if not profile and data["sis_login_id"]:
+                profile = StudentProfile.query.filter_by(sis_login_id=data["sis_login_id"]).first()
+            existing = profile.user if profile else None
+
+        if existing:
+            if existing.role != "student":
+                skipped += 1
+                errors.append(f"Line {line_no}: {data['name']} matches a non-student account and was skipped.")
+                continue
+            profile = existing.student_profile
+            if not profile:
+                profile = StudentProfile(user_id=existing.id, source="canvas")
+                db.session.add(profile)
+            profile.canvas_user_id = data["canvas_user_id"] or profile.canvas_user_id
+            profile.sis_user_id = data["sis_user_id"] or profile.sis_user_id
+            profile.sis_login_id = data["sis_login_id"] or profile.sis_login_id
+            profile.section = data["section"] or profile.section
+            profile.source = "canvas"
+            existing_count += 1
+            continue
+
+        email = data["email"] or _placeholder_email(data["student_id"], data["canvas_user_id"])
+        # Placeholder addresses are internal only. Ensure uniqueness without
+        # changing the student's Canvas/SIS ID used for login.
+        if User.query.filter(User.email.ilike(email)).first():
+            email = _placeholder_email(f"{data['student_id']}-{secrets.token_hex(2)}", data["canvas_user_id"])
+
+        password = _temporary_password()
+        user = User(
+            name=data["name"][:120],
+            email=email,
+            student_id=data["student_id"],
+            role="student",
+            active=True,
+        )
+        user.set_password(password)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(StudentProfile(
+            user_id=user.id,
+            canvas_user_id=data["canvas_user_id"] or None,
+            sis_user_id=data["sis_user_id"] or None,
+            sis_login_id=data["sis_login_id"] or None,
+            section=data["section"] or None,
+            source="canvas",
+        ))
+        credentials.append({
+            "name": user.name,
+            "student_id": user.student_id,
+            "login": user.student_id,
+            "email": "" if user.email.endswith("@beaconcode.local") else user.email,
+            "password": password,
+            "section": data["section"],
+        })
+        created += 1
+
+    db.session.commit()
+    report = {
+        "created": created,
+        "existing": existing_count,
+        "skipped": skipped,
+        "sections": sorted(sections),
+        "headers": reader.fieldnames or [],
+        "errors": errors[:20],
+    }
+    return render_template("admin/canvas_import.html", report=report, credentials=credentials)
+
+
+@admin_bp.route("/grades")
+@admin_required
+def gradebook():
+    course_codes = [x[0] for x in db.session.query(Exam.course_code).distinct().order_by(Exam.course_code).all() if x[0]]
+    selected = (request.args.get("course") or "").strip()
+    if selected and selected not in course_codes:
+        selected = ""
+    exams, rows = build_admin_gradebook(selected or None)
+    return render_template(
+        "admin/gradebook.html",
+        exams=exams,
+        rows=rows,
+        course_codes=course_codes,
+        selected_course=selected,
+        total_points=total_points,
+    )
+
+
+@admin_bp.route("/grades.csv")
+@admin_required
+def gradebook_csv():
+    selected = (request.args.get("course") or "").strip()
+    exams, rows = build_admin_gradebook(selected or None)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    header = ["student_id", "student_name", "email", "section"]
+    header.extend([f"{exam.title} ({total_points(exam):g} pts)" for exam in exams])
+    header.extend(["earned_points", "graded_points_possible", "current_percent", "letter_grade", "grade_point_equivalent"])
+    writer.writerow(header)
+    for row in rows:
+        student = row["student"]
+        values = [student.student_id, student.name, student.email, row["profile"].section if row["profile"] else ""]
+        for cell in row["cells"]:
+            if cell["attempt"] and cell["attempt"].status == "submitted":
+                values.append(f"{cell['score']:g}/{cell['possible']:g} ({cell['percent']:g}%)")
+            elif cell["attempt"]:
+                values.append("In progress")
+            else:
+                values.append("")
+        values.extend([
+            row["earned"], row["possible"],
+            "" if row["percent"] is None else row["percent"],
+            row["letter"], "" if row["grade_points"] is None else row["grade_points"],
+        ])
+        writer.writerow(values)
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "_", selected or "all_courses")
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=beaconcode_gradebook_{suffix}.csv"},
+    )
 
 
 @admin_bp.route("/students/<int:user_id>/toggle", methods=["POST"])

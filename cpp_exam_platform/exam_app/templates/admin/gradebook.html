@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block title %}Grades{% endblock %}
+{% block content %}
+<div class="page-head gradebook-head">
+  <div>
+    <span class="eyebrow">COURSE GRADEBOOK</span>
+    <h1>Grades</h1>
+    <p>One view of every student across all BeaconCode assessments. Current grades use submitted work only.</p>
+  </div>
+  <div class="head-actions">
+    <a class="btn btn-secondary" href="{{ url_for('admin.gradebook_csv', course=selected_course) }}">Export CSV</a>
+  </div>
+</div>
+
+<section class="card gradebook-toolbar">
+  <form method="get" class="grade-filter-form">
+    <label>Course
+      <select name="course" onchange="this.form.submit()">
+        <option value="">All courses</option>
+        {% for code in course_codes %}<option value="{{ code }}" {% if code == selected_course %}selected{% endif %}>{{ code }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Find student
+      <input id="gradeStudentSearch" type="search" placeholder="Name or student ID">
+    </label>
+  </form>
+  <div class="gradebook-note">A dash means no submitted grade yet. In-progress attempts are shown separately and are not counted as zeros.</div>
+</section>
+
+<section class="card gradebook-card">
+  <div class="gradebook-scroll">
+    <table class="gradebook-table" id="gradebookTable">
+      <thead>
+        <tr>
+          <th class="sticky-student">Student</th>
+          {% for exam in exams %}
+          <th class="exam-grade-head">
+            <a href="{{ url_for('admin.results', exam_id=exam.id) }}">{{ exam.title }}</a>
+            <small>{{ exam.course_code }} · {{ '%g'|format(total_points(exam) if total_points is defined else 0) }} pts</small>
+          </th>
+          {% endfor %}
+          <th class="summary-head">Completed</th>
+          <th class="summary-head">Current grade</th>
+          <th class="summary-head">Letter</th>
+          <th class="summary-head">Grade point</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr data-student="{{ (row.student.name ~ ' ' ~ (row.student.student_id or ''))|lower }}">
+          <td class="sticky-student student-cell">
+            <strong>{{ row.student.name }}</strong>
+            <span>{{ row.student.student_id or 'No ID' }}</span>
+            {% if row.profile and row.profile.section %}<small>{{ row.profile.section }}</small>{% endif %}
+          </td>
+          {% for cell in row.cells %}
+          <td class="grade-cell">
+            {% if cell.attempt and cell.attempt.status == 'submitted' %}
+              <a class="grade-score" href="{{ url_for('admin.review_attempt', attempt_id=cell.attempt.id) }}">
+                <strong>{{ '%g'|format(cell.score) }}/{{ '%g'|format(cell.possible) }}</strong>
+                <span>{{ cell.percent }}%</span>
+              </a>
+            {% elif cell.attempt %}
+              <a class="pill" href="{{ url_for('admin.live_monitor', exam_id=cell.exam.id) }}">In progress</a>
+            {% else %}
+              <span class="grade-empty">—</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+          <td class="grade-summary"><strong>{{ row.completed }}/{{ exams|length }}</strong></td>
+          <td class="grade-summary">{% if row.percent is not none %}<strong>{{ row.percent }}%</strong><small>{{ '%g'|format(row.earned) }}/{{ '%g'|format(row.possible) }} pts</small>{% else %}<span>—</span>{% endif %}</td>
+          <td class="grade-summary"><strong>{{ row.letter }}</strong></td>
+          <td class="grade-summary">{% if row.grade_points is not none %}<strong>{{ '%.1f'|format(row.grade_points) }}</strong>{% else %}—{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="99"><div class="empty">No students are in the roster yet.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const gradeSearch = document.getElementById('gradeStudentSearch');
+if (gradeSearch) {
+  gradeSearch.addEventListener('input', () => {
+    const q = gradeSearch.value.trim().toLowerCase();
+    document.querySelectorAll('#gradebookTable tbody tr[data-student]').forEach(row => {
+      row.style.display = !q || row.dataset.student.includes(q) ? '' : 'none';
+    });
+  });
+}
+</script>
+{% endblock %}

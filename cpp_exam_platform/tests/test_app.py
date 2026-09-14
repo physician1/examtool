@@ -1,5 +1,6 @@
 import os
 import tempfile
+import io
 import pytest
 
 from exam_app import create_app
@@ -60,3 +61,34 @@ def test_compile_permission_is_enforced(client, app):
     attempt_id=int(r.request.path.rstrip('/').split('/')[-1])
     r=client.post(f'/student/attempts/{attempt_id}/compile',json={'question_id':qid,'code':'int main(){return 0;}'})
     assert r.status_code==403
+
+def test_admin_gradebook_page(client):
+    r = login(client, 'teacher@example.edu')
+    assert r.status_code == 200
+    r = client.get('/admin/grades')
+    assert r.status_code == 200
+    assert b'COURSE GRADEBOOK' in r.data
+    assert b'Student One' in r.data
+    assert b'Test Exam' in r.data
+
+
+def test_canvas_csv_import_creates_student_and_profile(client, app):
+    from exam_app.models import StudentProfile
+    login(client, 'teacher@example.edu')
+    data = (
+        'Student,ID,SIS User ID,SIS Login ID,Section,Quiz 1\n'
+        'Canvas Learner,777,UMB0099,canvas.learner@umb.edu,CS110-01,9\n'
+    )
+    r = client.post(
+        '/admin/students/import-canvas',
+        data={'csv_file': (io.BytesIO(data.encode('utf-8')), 'gradebook.csv')},
+        content_type='multipart/form-data',
+    )
+    assert r.status_code == 200
+    assert b'1 created' in r.data
+    with app.app_context():
+        student = User.query.filter_by(student_id='UMB0099').first()
+        assert student is not None
+        profile = StudentProfile.query.filter_by(user_id=student.id).first()
+        assert profile is not None
+        assert profile.section == 'CS110-01'
