@@ -92,3 +92,30 @@ def test_canvas_csv_import_creates_student_and_profile(client, app):
         profile = StudentProfile.query.filter_by(user_id=student.id).first()
         assert profile is not None
         assert profile.section == 'CS110-01'
+
+
+def test_admin_can_delete_student_and_related_records(client, app):
+    from exam_app.models import Attempt, Answer, MonitorEvent, StudentProfile
+    login(client, 'teacher@example.edu')
+    with app.app_context():
+        student = User.query.filter_by(student_id='S001').first()
+        exam = Exam.query.first()
+        question = Question.query.first()
+        attempt = Attempt(user_id=student.id, exam_id=exam.id, status='submitted', score=2.0)
+        db.session.add(attempt)
+        db.session.flush()
+        db.session.add(Answer(attempt_id=attempt.id, question_id=question.id, answer_text='1', score=2.0))
+        db.session.add(MonitorEvent(attempt_id=attempt.id, event_type='tab_hidden', details='test'))
+        db.session.add(StudentProfile(user_id=student.id, source='manual', section='CS101-01'))
+        db.session.commit()
+        student_id = student.id
+        attempt_id = attempt.id
+
+    r = client.post(f'/admin/students/{student_id}/delete', follow_redirects=True)
+    assert r.status_code == 200
+    assert b'permanently deleted' in r.data
+
+    with app.app_context():
+        assert db.session.get(User, student_id) is None
+        assert db.session.get(Attempt, attempt_id) is None
+        assert StudentProfile.query.filter_by(user_id=student_id).first() is None

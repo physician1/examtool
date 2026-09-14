@@ -696,6 +696,38 @@ def toggle_student(user_id):
     return redirect(url_for("admin.students"))
 
 
+@admin_bp.route("/students/<int:user_id>/delete", methods=["POST"])
+@admin_required
+def delete_student(user_id):
+    """Permanently remove a student and their BeaconCode assessment records.
+
+    This is intentionally a small admin-only patch. Related attempts are
+    deleted through SQLAlchemy so their answers, monitoring events, and
+    instructor comments follow the existing cascade rules.
+    """
+    user = db.get_or_404(User, user_id)
+    if user.role != "student":
+        abort(400)
+
+    student_name = user.name
+
+    # Delete per-student extension records first because they reference user.id.
+    MonitoringOverride.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    StudentProfile.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+
+    # Deleting each Attempt via the ORM triggers the existing cascades for
+    # answers, monitoring events, and the attempt comment record.
+    for attempt in Attempt.query.filter_by(user_id=user.id).all():
+        db.session.delete(attempt)
+
+    db.session.flush()
+    db.session.delete(user)
+    db.session.commit()
+
+    flash(f"{student_name} and their BeaconCode records were permanently deleted.", "success")
+    return redirect(url_for("admin.students"))
+
+
 @admin_bp.route("/student-view", methods=["GET", "POST"])
 @admin_required
 def portal_settings():
