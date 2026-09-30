@@ -27,6 +27,9 @@ def app():
         q=Question(exam_id=exam.id,prompt='2 + 2?',question_type='mcq',points=2,position=1,options_json='["3","4","5"]',correct_answer='1')
         db.session.add(q);db.session.commit()
     yield app
+    with app.app_context():
+        db.session.remove()
+        db.engine.dispose()
     os.unlink(path)
 
 @pytest.fixture()
@@ -245,3 +248,52 @@ def test_canvas_student_must_change_shared_temp_password_before_dashboard(client
         assert state.must_change_password is False
         assert user.check_password('MyPrivatePass2026!')
         assert not user.check_password('SharedPass2026!')
+
+
+def test_released_submission_review(client, app):
+    from exam_app.models import Attempt, Answer, ExamPortalSettings, AttemptComment, TestCase
+    login(client, 'S001')
+    with app.app_context():
+        exam = Exam.query.first()
+        exam_id = exam.id
+        short = Question(exam_id=exam_id, prompt='Explain your reasoning', question_type='short', points=3, position=2)
+        code = Question(exam_id=exam_id, prompt='Write a program', question_type='code', points=5, position=3)
+        db.session.add_all([short, code]); db.session.flush()
+        db.session.add(TestCase(question_id=code.id, input_data='SECRET_INPUT', expected_output='SECRET_OUTPUT', hidden=True))
+        db.session.commit()
+    client.post(f'/student/exams/{exam_id}/start')
+    with app.app_context():
+        attempt = Attempt.query.first()
+        attempt_id = attempt.id
+        for answer in attempt.answers:
+            answer.answer_text = {'mcq': '1', 'short': '<script>reason</script>', 'code': 'int main() { return 0; }'}[answer.question.question_type]
+            answer.feedback = 'Reviewed carefully'
+            answer.score = 1
+        attempt.status = 'submitted'
+        attempt.score = 3
+        db.session.add(AttemptComment(attempt_id=attempt_id, comment='Overall review'))
+        db.session.commit()
+    url = f'/student/attempts/{attempt_id}/result'
+    pending = client.get(url)
+    assert b'Explain your reasoning' not in pending.data
+    assert b'Reviewed carefully' not in pending.data
+    with app.app_context():
+        db.session.add(ExamPortalSettings(exam_id=exam_id, results_released=True)); db.session.commit()
+    released = client.get(url)
+    assert released.status_code == 200
+    for text in [b'2 + 2?', b'B. 4', b'Explain your reasoning', b'&lt;script&gt;reason&lt;/script&gt;', b'int main() { return 0; }', b'Reviewed carefully', b'Overall review']:
+        assert text in released.data
+    assert b'SECRET_INPUT' not in released.data and b'SECRET_OUTPUT' not in released.data
+    client.post('/logout')
+    login(client, 'teacher@example.edu')
+    review = client.get(f'/admin/attempts/{attempt_id}/review')
+    assert review.status_code == 200 and b'B. 4' in review.data
+
+
+def test_mcq_display_labels(app):
+    display = app.jinja_env.filters['mcq_answer']
+    for index, letter in enumerate('ABCD'):
+        assert display(str(index), '["one", "two", "three", "four"]').startswith(letter + '. ')
+    assert display('', '[]') == '(blank)'
+    assert display('-1', '["one"]') == 'Invalid choice'
+    assert display('bad', '["one"]') == 'Invalid choice'
