@@ -12,7 +12,16 @@
 
 {% if settings.show_comments and attempt.comment_record and attempt.comment_record.comment %}<section class="card feedback-card"><span class="eyebrow">INSTRUCTOR FEEDBACK</span><h2>Comment</h2><p>{{ attempt.comment_record.comment }}</p></section>{% endif %}
 
-{% if settings.show_question_breakdown %}<section class="card portal-section"><div class="card-head"><div><h2>Question breakdown</h2><p>Points earned and feedback</p></div></div><div class="result-breakdown detailed">{% for a in attempt.answers %}<div class="result-question-row"><div><span>Question {{ loop.index }}</span><small>{{ a.question.question_type|upper }}</small></div><strong>{{ a.score }} / {{ a.question.points }}</strong>{% if settings.show_comments and a.feedback %}<p>{{ a.feedback }}</p>{% endif %}</div>{% endfor %}</div></section>{% endif %}
+<section class="portal-section"><div class="card-head"><div><h2>Your submitted work</h2><p>Questions and answers from your submission</p></div></div>
+<div class="review-list">{% for a in attempt.answers|sort(attribute='question.position') %}
+<section class="card review-card"><div class="review-head"><span class="qnum">{{ loop.index }}</span><div><span class="pill">{{ a.question.question_type|upper }}</span><h3 style="white-space: pre-wrap">{{ a.question.prompt }}</h3></div>{% if settings.show_question_breakdown %}<strong>{{ a.score }} / {{ a.question.points }} points</strong>{% endif %}</div>
+{% if a.question.question_type == 'mcq' %}<ul>{% for option in a.question.options_json|fromjson %}<li>{{ loop.index0|mcq_answer(a.question.options_json) }}</li>{% endfor %}</ul>{% endif %}
+<h4>Your submitted answer</h4>
+{% if a.question.question_type == 'code' %}<pre class="code-review">{{ a.answer_text or '(blank)' }}</pre>
+{% elif a.question.question_type == 'mcq' %}<div class="answer-box">{{ a.answer_text|mcq_answer(a.question.options_json) }}</div>
+{% else %}<div class="answer-box" style="white-space: pre-wrap">{{ a.answer_text or '(blank)' }}</div>{% endif %}
+{% if settings.show_comments and a.feedback %}<h4>Feedback</h4><p style="white-space: pre-wrap">{{ a.feedback }}</p>{% endif %}
+</section>{% endfor %}</div></section>
 {% endif %}
 <div class="result-actions"><a class="btn btn-primary" href="{{ url_for('student.dashboard') }}">Dashboard</a><a class="btn btn-secondary" href="{{ url_for('student.grades') }}">My Grades</a></div>
 </div>{% endblock %}

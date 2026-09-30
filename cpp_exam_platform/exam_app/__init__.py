@@ -30,6 +30,23 @@ def create_app(test_config=None):
     import json
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
+    def mcq_answer(value, options_json):
+        options = json.loads(options_json or "[]")
+        if value is None or not str(value).strip():
+            return "(blank)"
+        try:
+            index = int(value)
+        except (ValueError, TypeError):
+            return "Invalid choice"
+        if not 0 <= index < len(options):
+            return "Invalid choice"
+        number, label = index + 1, ""
+        while number:
+            number, remainder = divmod(number - 1, 26)
+            label = chr(65 + remainder) + label
+        return f"{label}. {options[index]}"
+
+    app.jinja_env.filters["mcq_answer"] = mcq_answer
     app.jinja_env.filters["fromjson"] = lambda value: json.loads(value or "[]")
     def eastern_input(value):
         if not value:
