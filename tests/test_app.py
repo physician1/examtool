@@ -385,3 +385,29 @@ def test_access_code_additive_upgrade_preserves_records(app):
         assert [(e.id, e.title) for e in Exam.query.order_by(Exam.id)] == original_exams
         assert [c['name'] for c in inspect(db.engine).get_columns('exam')] == original_columns
         assert ExamAccessCode.query.count() == 0
+
+
+def test_formatted_prompt_on_exam_and_reviews(client, app):
+    from exam_app.models import Attempt, ExamPortalSettings
+    prompt = 'Explain this code:\n```cpp\nint main() {\n    return 0;\n}\n```\n<script>alert(1)</script>'
+    with app.app_context():
+        question = Question.query.first(); question.prompt = prompt
+        exam_id = question.exam_id; question_id = question.id
+        db.session.commit()
+    login(client, 'teacher@example.edu')
+    editor = client.get(f'/admin/questions/{question_id}/edit')
+    assert editor.status_code == 200
+    assert b'Insert C++ code' in editor.data and b'promptPreview' in editor.data
+    client.post('/logout'); login(client, 'S001')
+    exam = client.post(f'/student/exams/{exam_id}/start', follow_redirects=True)
+    assert exam.status_code == 200 and b'data-question-prompt' in exam.data
+    assert b'&lt;script&gt;' in exam.data and b'<script>alert(1)</script>' not in exam.data
+    assert b'js/prompt.js' in exam.data
+    with app.app_context():
+        attempt_id = Attempt.query.one().id
+        db.session.add(ExamPortalSettings(exam_id=exam_id, results_released=True)); db.session.commit()
+    result = client.post(f'/student/attempts/{attempt_id}/submit', follow_redirects=True)
+    assert result.status_code == 200 and b'data-question-prompt' in result.data
+    client.post('/logout'); login(client, 'teacher@example.edu')
+    review = client.get(f'/admin/attempts/{attempt_id}/review')
+    assert review.status_code == 200 and b'data-question-prompt' in review.data

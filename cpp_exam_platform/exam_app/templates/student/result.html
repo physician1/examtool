@@ -14,7 +14,7 @@
 
 <section class="portal-section"><div class="card-head"><div><h2>Your submitted work</h2><p>Questions and answers from your submission</p></div></div>
 <div class="review-list">{% for a in attempt.answers|sort(attribute='question.position') %}
-<section class="card review-card"><div class="review-head"><span class="qnum">{{ loop.index }}</span><div><span class="pill">{{ a.question.question_type|upper }}</span><h3 style="white-space: pre-wrap">{{ a.question.prompt }}</h3></div>{% if settings.show_question_breakdown %}<strong>{{ a.score }} / {{ a.question.points }} points</strong>{% endif %}</div>
+<section class="card review-card"><div class="review-head"><span class="qnum">{{ loop.index }}</span><div><span class="pill">{{ a.question.question_type|upper }}</span><div class="question-prompt" data-question-prompt>{{ a.question.prompt }}</div></div>{% if settings.show_question_breakdown %}<strong>{{ a.score }} / {{ a.question.points }} points</strong>{% endif %}</div>
 {% if a.question.question_type == 'mcq' %}<ul>{% for option in a.question.options_json|fromjson %}<li>{{ loop.index0|mcq_answer(a.question.options_json) }}</li>{% endfor %}</ul>{% endif %}
 <h4>Your submitted answer</h4>
 {% if a.question.question_type == 'code' %}<pre class="code-review">{{ a.answer_text or '(blank)' }}</pre>
