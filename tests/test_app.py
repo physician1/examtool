@@ -297,3 +297,91 @@ def test_mcq_display_labels(app):
     assert display('', '[]') == '(blank)'
     assert display('-1', '["one"]') == 'Invalid choice'
     assert display('bad', '["one"]') == 'Invalid choice'
+
+
+def test_access_code_gate_and_resume(client, app):
+    from exam_app.models import ExamAccessCode, Attempt, Answer
+    with app.app_context():
+        exam = Exam.query.first()
+        exam_id = exam.id
+        record = ExamAccessCode(exam=exam)
+        record.set_code('Class2026')
+        db.session.add(record); db.session.commit()
+        assert record.code_hash != 'Class2026'
+    login(client, 'S001')
+    url = f'/student/exams/{exam_id}/start'
+    page = client.get(url)
+    assert page.status_code == 200 and b'Exam access code' in page.data
+    assert b'Class2026' not in page.data and b'2 + 2?' not in page.data
+    for code in ['', 'wrong', 'class2026', 'x' * 65]:
+        assert client.post(url, data={'access_code': code}).status_code == 400
+    with app.app_context():
+        assert Attempt.query.count() == 0
+        assert Answer.query.count() == 0
+    assert client.post(url, data={'access_code': 'Class2026'}).status_code == 302
+    with app.app_context():
+        attempt = Attempt.query.one()
+        attempt_id, started = attempt.id, attempt.started_at
+        ExamAccessCode.query.one().set_code('NewCode2026')
+        db.session.commit()
+    assert client.post(url).location.endswith(f'/attempts/{attempt_id}')
+    assert client.get(url).location.endswith(f'/attempts/{attempt_id}')
+    with app.app_context():
+        assert Attempt.query.count() == 1
+        assert Attempt.query.one().started_at == started
+        Attempt.query.one().status = 'submitted'; db.session.commit()
+    assert client.post(url).location.endswith(f'/attempts/{attempt_id}/result')
+
+
+def test_access_code_admin_create_update_and_delete(client, app):
+    from exam_app.models import ExamAccessCode
+    login(client, 'teacher@example.edu')
+    form = {'title': 'Code protected', 'course_code': 'CS101', 'duration_minutes': '30', 'published': 'on'}
+    for code in ['', 'abc', 'x' * 65]:
+        assert client.post('/admin/exams/new', data={**form, 'access_code': code}).status_code == 400
+    assert client.post('/admin/exams/new', data={**form, 'access_code': 'Open2026'}).status_code == 302
+    with app.app_context():
+        exam = Exam.query.filter_by(title='Code protected').one()
+        exam_id = exam.id
+        assert exam.access_code.check_code('Open2026')
+        original_hash = exam.access_code.code_hash
+    edit = f'/admin/exams/{exam_id}/edit'
+    assert b'Open2026' not in client.get(edit).data
+    assert client.post(edit, data=form).status_code == 302
+    with app.app_context():
+        assert db.session.get(ExamAccessCode, exam_id).code_hash == original_hash
+    assert client.post(edit, data={**form, 'access_code': 'Next2026'}).status_code == 302
+    with app.app_context():
+        assert db.session.get(ExamAccessCode, exam_id).check_code('Next2026')
+    assert client.post(f'/admin/exams/{exam_id}/delete', data={'confirmation': 'DELETE'}).status_code == 302
+    with app.app_context():
+        assert db.session.get(ExamAccessCode, exam_id) is None
+
+
+def test_access_code_does_not_override_schedule(client, app):
+    from datetime import timedelta
+    from exam_app.models import ExamAccessCode, Attempt, utcnow
+    with app.app_context():
+        exam = Exam.query.first(); exam_id = exam.id
+        exam.start_at = utcnow() + timedelta(days=1)
+        record = ExamAccessCode(exam=exam); record.set_code('Class2026')
+        db.session.add(record); db.session.commit()
+    login(client, 'S001')
+    assert client.post(f'/student/exams/{exam_id}/start', data={'access_code': 'Class2026'}).status_code == 302
+    with app.app_context():
+        assert Attempt.query.count() == 0
+
+
+def test_access_code_additive_upgrade_preserves_records(app):
+    from exam_app.models import ExamAccessCode
+    from sqlalchemy import inspect
+    with app.app_context():
+        original_users = [(u.id, u.email, u.password_hash) for u in User.query.order_by(User.id)]
+        original_exams = [(e.id, e.title) for e in Exam.query.order_by(Exam.id)]
+        original_columns = [c['name'] for c in inspect(db.engine).get_columns('exam')]
+        ExamAccessCode.__table__.drop(db.engine)
+        db.create_all()
+        assert [(u.id, u.email, u.password_hash) for u in User.query.order_by(User.id)] == original_users
+        assert [(e.id, e.title) for e in Exam.query.order_by(Exam.id)] == original_exams
+        assert [c['name'] for c in inspect(db.engine).get_columns('exam')] == original_columns
+        assert ExamAccessCode.query.count() == 0

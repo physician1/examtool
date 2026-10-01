@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block title %}Start exam · {{ exam.title }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">START EXAM</span><h1>{{ exam.title }}</h1><p>{{ exam.duration_minutes }} minutes. Your timer starts when you successfully start the exam.</p></div></div>
+<section class="card"><form method="post" action="{{ url_for('student.start_exam', exam_id=exam.id) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{% if exam.access_code %}<label>Exam access code<input type="password" name="access_code" maxlength="64" autocomplete="off" required autofocus><small>Enter the code your instructor shared. Codes are case-sensitive.</small></label>{% endif %}
+<button class="btn btn-primary">Start exam</button>
+<a class="btn btn-ghost" href="{{ url_for('student.dashboard') }}">Back</a>
+</form></section>
+{% endblock %}

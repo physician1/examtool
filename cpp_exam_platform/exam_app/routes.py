@@ -22,7 +22,7 @@ from .models import (
     User, Exam, Question, TestCase, Attempt, Answer, MonitorEvent, utcnow,
     PortalSettings, ExamPortalSettings, ExamArchive, MonitoringOverride,
     AttemptComment, StudentProfile, ExamException, DashboardActivityState,
-    StudentPasswordState,
+    StudentPasswordState, ExamAccessCode,
 )
 from .grader import compile_cpp, run_cpp, grade_code
 
@@ -980,8 +980,21 @@ def _populate_exam(exam):
         duration_minutes = 60
         errors.append("Duration must be a valid number of minutes.")
 
+    access_code = (request.form.get("access_code") or "").strip()
+    if not exam.id and not access_code:
+        errors.append("Set a shared access code for this exam.")
+    if access_code and not 4 <= len(access_code) <= 64:
+        errors.append("Access code must contain 4 to 64 characters.")
+
     if errors:
         return errors
+
+    if access_code:
+        record = exam.access_code
+        if record is None:
+            record = ExamAccessCode(exam=exam)
+            db.session.add(record)
+        record.set_code(access_code)
 
     exam.title = request.form.get("title", "Untitled Exam").strip()
     exam.course_code = request.form.get("course_code", "C++").strip()
@@ -1040,6 +1053,7 @@ def exam_delete(exam_id):
 
     # Delete extension records first, then attempts (whose answers/events/comments
     # cascade), then the exam and questions/test cases.
+    ExamAccessCode.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
     MonitoringOverride.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
     ExamException.query.filter_by(exam_id=exam.id).delete(synchronize_session=False)
     db.session.query(ExamPortalSettings).filter_by(exam_id=exam.id).delete(synchronize_session=False)
@@ -1423,7 +1437,7 @@ def grades():
     )
 
 
-@student_bp.route("/exams/<int:exam_id>/start", methods=["POST"])
+@student_bp.route("/exams/<int:exam_id>/start", methods=["GET", "POST"])
 @student_required
 def start_exam(exam_id):
     exam = db.get_or_404(Exam, exam_id)
@@ -1435,6 +1449,13 @@ def start_exam(exam_id):
         flash("You have already submitted this exam.", "warning")
         return redirect(url_for("student.result", attempt_id=attempt.id))
     if not attempt:
+        if request.method == "GET":
+            return render_template("student/start_exam.html", exam=exam)
+        if exam.access_code:
+            code = (request.form.get("access_code") or "").strip()
+            if not code or len(code) > 64 or not exam.access_code.check_code(code):
+                flash("Incorrect access code. Ask your instructor for the exam code.", "danger")
+                return render_template("student/start_exam.html", exam=exam), 400
         attempt = Attempt(user_id=current_user.id, exam_id=exam.id)
         db.session.add(attempt)
         db.session.flush()

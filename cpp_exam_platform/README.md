@@ -411,3 +411,20 @@ Canvas metadata is stored in a separate `student_profile` table so an existing P
 ## Per-student exam exceptions
 
 Instructors can grant one student a custom exam start/end window after the normal exam has closed. Open **Exams -> Exceptions** (or **Student exceptions** from the exam settings/results page), choose the student, set the special window, and optionally reopen an already submitted attempt while preserving the student's answers. This uses the existing Render/PostgreSQL deployment; no hosting changes are required.
+
+
+## Shared exam access codes
+
+New exams require one instructor-chosen code (4–64 characters, case-sensitive).
+Share it with the class. Students enter it on the Start exam page; their timer
+starts only after the code is accepted. Existing attempts resume without a code.
+Existing exams remain accessible as before until an instructor sets a code in
+Exam settings. Leave the field blank on edit to retain the current code; enter
+a new value to replace it. Codes are stored as one-way hashes and are not shown
+back to instructors or students.
+
+Deployment adds the `exam_access_code` table through the existing startup
+`db.create_all()` call. It does not alter existing tables, credentials, or
+submissions. Keep the existing database and environment configuration. Rebuild
+and restart only the web service (`docker compose up -d --no-deps web` after
+building it); do not recreate the database or rerun `init-admin`.
