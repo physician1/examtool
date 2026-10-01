@@ -1,6 +1,6 @@
 {% extends 'base.html' %}{% block title %}{{ attempt.exam.title }}{% endblock %}{% block body_class %}exam-mode{% endblock %}
 {% block content %}
-<div class="exam-layout" id="examApp"
+<div class="exam-layout" id="examApp" {% if attempt.exam.require_fullscreen %}inert{% endif %}
  data-attempt="{{ attempt.id }}"
  data-monitor="{{ 1 if monitoring_active else 0 }}"
  data-fullscreen="{{ 1 if attempt.exam.require_fullscreen else 0 }}"
@@ -20,7 +20,7 @@
     {% endif %}<div class="question-actions"><button type="button" class="btn btn-ghost prev-btn" {% if loop.first %}disabled{% endif %}>← Previous</button><button type="button" class="btn btn-secondary flag-btn">☆ Mark for review</button>{% if not loop.last %}<button type="button" class="btn btn-primary next-btn">Next →</button>{% else %}<button type="button" class="btn btn-primary" id="openSubmit">Review & submit</button>{% endif %}</div></article>{% endfor %}</div>
   </section>
 </div>
-{% if monitoring_active and attempt.exam.require_fullscreen %}<div class="secure-gate" id="secureGate"><div class="gate-card"><span class="brand-mark big">&lt;/&gt;</span><h2>Enter focused exam mode</h2><p>This exam requires fullscreen. Leaving fullscreen or switching away from the exam may be recorded and can generate an automatic warning.</p><button class="btn btn-primary btn-block" id="enterExam">Enter exam</button></div></div>{% endif %}
+{% if attempt.exam.require_fullscreen %}<div class="secure-gate" id="secureGate" role="dialog" aria-modal="true" aria-labelledby="fullscreenTitle"><div class="gate-card"><span class="brand-mark big">&lt;/&gt;</span><h2 id="fullscreenTitle">Enter focused exam mode</h2><p>This exam requires fullscreen to continue answering. If you leave fullscreen, return here to re-enter. Your exam timer continues running.</p><button class="btn btn-primary btn-block" id="enterExam">Enter exam</button></div></div>{% endif %}
 <div class="modal-backdrop" id="submitModal"><div class="modal"><h2>Submit your exam?</h2><p>Once submitted, your answers cannot be changed. Make sure you have reviewed all questions.</p><div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelSubmit">Keep working</button><form action="{{ url_for('student.submit_exam', attempt_id=attempt.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary">Submit exam</button></form></div></div></div>
 <div class="warning-backdrop" id="integrityWarning" aria-live="assertive"><div class="warning-card"><div class="warning-icon">!</div><span class="eyebrow">EXAM WARNING</span><h2 id="warningTitle">Examination activity warning</h2><p id="warningMessage">You left the examination environment. This event has been recorded.</p><div class="warning-count" id="warningCount">Warning 1</div><button type="button" class="btn btn-primary btn-block" id="ackWarning">Acknowledge & return to exam</button></div></div>
 {% endblock %}

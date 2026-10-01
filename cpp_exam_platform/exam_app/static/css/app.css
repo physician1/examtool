@@ -69,3 +69,7 @@
 .prompt-toolbar { margin: .75rem 0; }
 .prompt-preview { border: 1px solid #cbd5e1; padding: 1rem; border-radius: .6rem; margin-bottom: 1rem; }
 .review-head > div { min-width: 0; }
+
+/* Fullscreen gate persists independently of monitoring and warning overlays. */
+.secure-gate { z-index: 150; }
+.secure-gate[hidden] { display: none !important; }
