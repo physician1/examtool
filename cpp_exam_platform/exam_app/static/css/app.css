@@ -58,3 +58,14 @@
 
 /* Temporary-password / first-login flow */
 .password-change-wrap{max-width:620px;margin:46px auto;padding:0 20px}.password-change-card{padding:28px}.password-change-card h1{margin:6px 0 10px;color:var(--navy)}.password-change-card small{display:block;margin-top:5px;color:var(--muted)}.pill-warning{background:#fff4df!important;color:#8a5a00!important;border-color:#f5d596!important}.check-row{display:flex!important;flex-direction:row!important;align-items:flex-start!important;gap:9px}.check-row input{width:auto!important;margin-top:3px}.check-row span{line-height:1.45}
+
+/* Prompt prose and C++ examples, shared by editor, exam, and reviews. */
+.question-prompt { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.prompt-prose { white-space: pre-wrap; margin: .6rem 0; line-height: 1.6; }
+.prompt-code { white-space: pre; overflow-x: auto; max-width: 100%; padding: 1rem; border-radius: .6rem; background: #142235; color: #eef4fc; text-align: left; tab-size: 4; }
+.prompt-code code { font: 14px/1.65 Consolas, 'Courier New', monospace; }
+.cpp-comment { color: #a5b5a2; } .cpp-string { color: #f1c991; }
+.cpp-directive { color: #cdb5ff; } .cpp-keyword { color: #8dcaff; } .cpp-number { color: #a6e6bd; }
+.prompt-toolbar { margin: .75rem 0; }
+.prompt-preview { border: 1px solid #cbd5e1; padding: 1rem; border-radius: .6rem; margin-bottom: 1rem; }
+.review-head > div { min-width: 0; }

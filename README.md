@@ -428,3 +428,8 @@ Deployment adds the `exam_access_code` table through the existing startup
 submissions. Keep the existing database and environment configuration. Rebuild
 and restart only the web service (`docker compose up -d --no-deps web` after
 building it); do not recreate the database or rerun `init-admin`.
+
+
+## C++ examples in question prompts
+
+Use **Insert C++ code** in the question editor to insert a fenced code block or wrap selected text. Paste code into the selected area. The live preview preserves indentation and highlights C++ syntax; students and instructors see the same formatting in exams and reviews. Plain text stays plain text, and HTML is never executed. This uses the existing prompt field and requires no database changes.
