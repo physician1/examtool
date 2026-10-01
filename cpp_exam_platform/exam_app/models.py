@@ -237,3 +237,16 @@ class StudentPasswordState(db.Model):
     changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     user = db.relationship("User", backref=db.backref("password_state", uselist=False))
+
+
+class ExamAccessCode(db.Model):
+    """Separate storage keeps existing exam tables and submissions intact."""
+    exam_id = db.Column(db.Integer, db.ForeignKey("exam.id"), primary_key=True)
+    code_hash = db.Column(db.String(255), nullable=False)
+    exam = db.relationship("Exam", backref=db.backref("access_code", uselist=False))
+
+    def set_code(self, code):
+        self.code_hash = generate_password_hash(code)
+
+    def check_code(self, code):
+        return check_password_hash(self.code_hash, code)

@@ -30,7 +30,7 @@
       <div class="exam-facts"><span><strong>{{ exam.duration_minutes }}</strong> min</span><span><strong>{{ exam.questions|length }}</strong> questions</span><span><strong>{{ 'On' if exam.monitoring_enabled else 'Off' }}</strong> monitoring</span></div>
       {% if a and a.status=='submitted' %}<a class="btn btn-secondary btn-block" href="{{ url_for('student.result', attempt_id=a.id) }}">{{ 'View result' if results_released(exam) else 'View submission' }}</a>
       {% elif a %}<a class="btn btn-primary btn-block" href="{{ url_for('student.take_exam', attempt_id=a.id) }}">Continue exam</a>
-      {% elif exam_is_open(exam) %}<form action="{{ url_for('student.start_exam', exam_id=exam.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary btn-block">Start exam</button></form>
+      {% elif exam_is_open(exam) %}<a class="btn btn-primary btn-block" href="{{ url_for('student.start_exam', exam_id=exam.id) }}">Start exam</a>
       {% else %}<button class="btn btn-disabled btn-block" disabled>Not currently open</button>{% endif %}
     </article>
   {% else %}<div class="empty card">No exams are currently published.</div>{% endfor %}
