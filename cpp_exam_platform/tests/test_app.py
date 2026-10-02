@@ -411,3 +411,38 @@ def test_formatted_prompt_on_exam_and_reviews(client, app):
     client.post('/logout'); login(client, 'teacher@example.edu')
     review = client.get(f'/admin/attempts/{attempt_id}/review')
     assert review.status_code == 200 and b'data-question-prompt' in review.data
+
+
+@pytest.mark.parametrize('monitoring', [False, True])
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('clipboard', [False, True])
+def test_exam_controls_independent(client, app, monitoring, fullscreen, clipboard):
+    with app.app_context():
+        exam = Exam.query.first(); exam_id = exam.id
+        exam.monitoring_enabled = monitoring
+        exam.require_fullscreen = fullscreen
+        exam.block_copy_paste = clipboard
+        db.session.commit()
+    login(client, 'S001')
+    page = client.post(f'/student/exams/{exam_id}/start', follow_redirects=True)
+    assert page.status_code == 200
+    assert (b'id="secureGate"' in page.data) == fullscreen
+    assert f'data-monitor="{int(monitoring)}"'.encode() in page.data
+    assert f'data-fullscreen="{int(fullscreen)}"'.encode() in page.data
+    assert f'data-block-copy="{int(clipboard)}"'.encode() in page.data
+
+
+def test_monitoring_override_keeps_exam_controls(client, app):
+    from exam_app.models import MonitoringOverride
+    with app.app_context():
+        exam = Exam.query.first(); exam_id = exam.id
+        exam.require_fullscreen = True; exam.block_copy_paste = True
+        student = User.query.filter_by(student_id='S001').one()
+        db.session.add(MonitoringOverride(exam_id=exam_id, user_id=student.id, enabled=False))
+        db.session.commit()
+    login(client, 'S001')
+    page = client.post(f'/student/exams/{exam_id}/start', follow_redirects=True)
+    assert page.status_code == 200
+    assert b'data-monitor="0"' in page.data
+    assert b'data-block-copy="1"' in page.data
+    assert b'id="secureGate"' in page.data

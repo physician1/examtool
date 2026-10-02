@@ -5,8 +5,8 @@
   let monitoring = app.dataset.monitor === '1';
   const baseRequireFullscreen = app.dataset.fullscreen === '1';
   const baseBlockCopy = app.dataset.blockCopy === '1';
-  let requireFullscreen = monitoring && baseRequireFullscreen;
-  let blockCopy = monitoring && baseBlockCopy;
+  const requireFullscreen = baseRequireFullscreen;
+  const blockCopy = baseBlockCopy;
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   let seconds = Number(app.dataset.remaining || 0);
   let intentionalSubmit = false;
@@ -26,8 +26,6 @@
 
   function setMonitoring(enabled) {
     monitoring = !!enabled;
-    requireFullscreen = monitoring && baseRequireFullscreen;
-    blockCopy = monitoring && baseBlockCopy;
     if (monitorStatus) {
       monitorStatus.querySelector('.status-dot')?.classList.toggle('on', monitoring);
       const label = monitorStatus.querySelector('strong');
@@ -54,13 +52,35 @@
     } catch (_) {}
   }
 
-  document.getElementById('ackWarning')?.addEventListener('click', async () => {
-    warningBackdrop?.classList.remove('show');
-    await logEvent('warning_acknowledged', 'Student acknowledged an exam warning');
-    if (requireFullscreen && !document.fullscreenElement) {
-      try { await document.documentElement.requestFullscreen(); } catch (_) {}
+  const gate = document.getElementById('secureGate');
+  const enterButton = document.getElementById('enterExam');
+  function syncFullscreenGate() {
+    const blocked = requireFullscreen && !document.fullscreenElement;
+    if (gate) gate.hidden = !blocked;
+    app.inert = blocked;
+    const submitModal = document.getElementById('submitModal');
+    if (submitModal) submitModal.inert = blocked;
+    if (blocked) enterButton?.focus();
+  }
+  async function enterFullscreen() {
+    try {
+      // Request during the click gesture, before any network waits.
+      await document.documentElement.requestFullscreen();
+      syncFullscreenGate();
+      logEvent('fullscreen_enter', 'Entered fullscreen exam mode');
+    } catch (_) {
+      syncFullscreenGate();
+      if (gate) gate.querySelector('p').textContent = 'Fullscreen could not be entered. Check your browser permissions and try again, or contact your instructor. Your exam timer is still running.';
+      logEvent('fullscreen_denied', 'Browser denied fullscreen request');
     }
+  }
+  enterButton?.addEventListener('click', enterFullscreen);
+  document.getElementById('ackWarning')?.addEventListener('click', () => {
+    warningBackdrop?.classList.remove('show');
+    if (requireFullscreen && !document.fullscreenElement) enterFullscreen();
+    logEvent('warning_acknowledged', 'Student acknowledged an exam warning');
   });
+  syncFullscreenGate();
 
   function currentPanel() { return document.querySelector('.question-panel.active'); }
   function showPanel(index) {
@@ -115,15 +135,13 @@
   document.addEventListener('visibilitychange',()=>{if(!monitoring)return;if(document.hidden)logEvent('tab_hidden','Exam page became hidden');else logEvent('tab_visible','Student returned to exam page');});
   window.addEventListener('blur',()=>{if(!monitoring)return;blurTimer=setTimeout(()=>{if(!document.hidden)logEvent('window_blur','Browser window lost focus');},450);});
   window.addEventListener('focus',()=>{if(blurTimer){clearTimeout(blurTimer);blurTimer=null;}if(monitoring)logEvent('window_focus','Student returned to exam window');});
-  document.addEventListener('fullscreenchange',()=>{if(monitoring && requireFullscreen && !document.fullscreenElement)logEvent('fullscreen_exit','Student exited fullscreen');});
+  document.addEventListener('fullscreenchange',()=>{syncFullscreenGate();if(requireFullscreen && !document.fullscreenElement)logEvent('fullscreen_exit','Student exited fullscreen');});
   window.addEventListener('offline',()=>{if(monitoring)logEvent('offline','Network connection lost');});
   window.addEventListener('online',()=>{if(monitoring)logEvent('online','Network connection restored');});
   window.addEventListener('beforeunload',()=>{if(monitoring && !intentionalSubmit)logEvent('page_leave','Attempted to leave or refresh exam page');});
 
   ['copy','cut','paste'].forEach(evt=>document.addEventListener(evt,e=>{if(!blockCopy)return;e.preventDefault();logEvent(evt==='paste'?'paste_attempt':'copy_attempt',`${evt} blocked`);},{capture:true}));
   document.addEventListener('contextmenu',e=>{if(!blockCopy)return;e.preventDefault();logEvent('context_menu','Right-click menu blocked');});
-
-  const gate=document.getElementById('secureGate');document.getElementById('enterExam')?.addEventListener('click',async()=>{try{await document.documentElement.requestFullscreen();gate.remove();logEvent('fullscreen_enter','Entered fullscreen exam mode');}catch(e){logEvent('fullscreen_denied','Browser denied fullscreen request');gate.querySelector('p').textContent='Fullscreen could not be entered. Check your browser permissions and try again.';}});
 
   try {
     const socket = io();

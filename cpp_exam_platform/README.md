@@ -433,3 +433,8 @@ building it); do not recreate the database or rerun `init-admin`.
 ## C++ examples in question prompts
 
 Use **Insert C++ code** in the question editor to insert a fenced code block or wrap selected text. Paste code into the selected area. The live preview preserves indentation and highlights C++ syntax; students and instructors see the same formatting in exams and reviews. Plain text stays plain text, and HTML is never executed. This uses the existing prompt field and requires no database changes.
+
+
+## Independent exam controls
+
+Browser monitoring controls event logging and warnings. Require fullscreen and Block copy & paste operate independently, including when monitoring is disabled for a student. Leaving required fullscreen restores the entry gate and prevents interacting with exam answers until re-entry; the timer keeps running. Browsers still permit exiting fullscreen. Clipboard blocking applies inside the exam page, not elsewhere on the computer. Students must load or refresh the exam page to receive updated settings/code. No database changes are needed.
